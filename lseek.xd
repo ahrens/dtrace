@@ -1,0 +1,33 @@
+dnode_next_offset:entry
+{
+	stack();
+	printf("obj=%u off=%u minlvl=%u blkfill=%u",
+	    args[0]->dn_object, *args[2], args[3], args[4]);
+}
+
+dnode_next_offset_level:entry
+{
+	printf("obj=%u off=%u lvl=%u blkfill=%u",
+	    args[0]->dn_object, *args[2], args[3], args[4]);
+}
+
+dnode_next_offset:return
+{
+	printf("rv=%u off=%u", arg1, *entry->args[2]);
+}
+
+dmu_offset_next:return
+{
+	printf("rv=%u off=%u", arg1, *entry->args[3]);
+}
+
+zfs_holey:return
+{
+	printf("off=%u", *entry->args[2]);
+}
+
+set-error
+{
+	printf("err=%u", arg0);
+	stack();
+}

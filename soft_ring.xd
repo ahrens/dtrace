@@ -1,0 +1,231 @@
+#!/usr/sbin/dtrace -qCs
+
+BEGIN
+{
+/* For soft ring workers, use this script:
+echo "::walk mac_soft_ring_cache | ::print mac_soft_ring_t s_ring_worker" | mdb -k | awk '{print "\ttgt[(kthread_t *)" $3 "] = 1;"}'
+*/
+        tgt[(kthread_t *)0xffffff02c6cf1c40] = 1;
+        tgt[(kthread_t *)0xffffff02c6cebc40] = 1;
+        tgt[(kthread_t *)0xffffff02c6ce5c40] = 1;
+        tgt[(kthread_t *)0xffffff02c6cdfc40] = 1;
+        tgt[(kthread_t *)0xffffff02c6cd9c40] = 1;
+        tgt[(kthread_t *)0xffffff02c6cd3c40] = 1;
+        tgt[(kthread_t *)0xffffff02c6ccdc40] = 1;
+        tgt[(kthread_t *)0xffffff02c6cc7c40] = 1;
+        tgt[(kthread_t *)0xffffff02c6cc1c40] = 1;
+        tgt[(kthread_t *)0xffffff02c6cbbc40] = 1;
+        tgt[(kthread_t *)0xffffff02c6cb5c40] = 1;
+        tgt[(kthread_t *)0xffffff02c6cafc40] = 1;
+        tgt[(kthread_t *)0xffffff02c6ca9c40] = 1;
+        tgt[(kthread_t *)0xffffff02c6ca3c40] = 1;
+        tgt[(kthread_t *)0xffffff02c6c9dc40] = 1;
+        tgt[(kthread_t *)0xffffff02c6c97c40] = 1;
+        tgt[(kthread_t *)0xffffff02c6c91c40] = 1;
+        tgt[(kthread_t *)0xffffff02c6c8bc40] = 1;
+        tgt[(kthread_t *)0xffffff02c71a9c40] = 1;
+        tgt[(kthread_t *)0xffffff02c71a3c40] = 1;
+        tgt[(kthread_t *)0xffffff02c719dc40] = 1;
+        tgt[(kthread_t *)0xffffff02c7197c40] = 1;
+        tgt[(kthread_t *)0xffffff02c7191c40] = 1;
+        tgt[(kthread_t *)0xffffff02c718bc40] = 1;
+        tgt[(kthread_t *)0xffffff02c6e8fc40] = 1;
+        tgt[(kthread_t *)0xffffff02c6e95c40] = 1;
+        tgt[(kthread_t *)0xffffff02c6e9bc40] = 1;
+        tgt[(kthread_t *)0xffffff02c6ea1c40] = 1;
+        tgt[(kthread_t *)0xffffff02c6ea7c40] = 1;
+        tgt[(kthread_t *)0xffffff02c6eadc40] = 1;
+        tgt[(kthread_t *)0xffffff02c6eb3c40] = 1;
+        tgt[(kthread_t *)0xffffff02c6eb9c40] = 1;
+        tgt[(kthread_t *)0xffffff02c6ebfc40] = 1;
+        tgt[(kthread_t *)0xffffff02c6ec5c40] = 1;
+        tgt[(kthread_t *)0xffffff02c6ecbc40] = 1;
+        tgt[(kthread_t *)0xffffff02c7161c40] = 1;
+        tgt[(kthread_t *)0xffffff02c7167c40] = 1;
+        tgt[(kthread_t *)0xffffff02c716dc40] = 1;
+        tgt[(kthread_t *)0xffffff02c7173c40] = 1;
+        tgt[(kthread_t *)0xffffff02c7179c40] = 1;
+        tgt[(kthread_t *)0xffffff02c717fc40] = 1;
+        tgt[(kthread_t *)0xffffff02c7185c40] = 1;
+        tgt[(kthread_t *)0xffffff02c6d3dc40] = 1;
+        tgt[(kthread_t *)0xffffff02c6d37c40] = 1;
+        tgt[(kthread_t *)0xffffff02c6d31c40] = 1;
+        tgt[(kthread_t *)0xffffff02c6d2bc40] = 1;
+        tgt[(kthread_t *)0xffffff02c6cfdc40] = 1;
+        tgt[(kthread_t *)0xffffff02c6cf7c40] = 1;
+}
+
+sched:::enqueue
+{
+	this->t = (kthread_t *)args[0]->pr_addr;
+	/*if (this->t->t_bound_cpu != NULL) {*/
+	if (tgt[this->t]) {
+		q[args[0]->pr_addr] = timestamp;
+		cpu_waiting[args[2]->cpu_id] = timestamp;
+	}
+}
+
+sched:::on-cpu
+{
+	this->qtime = q[curlwpsinfo->pr_addr];
+	cpu_waiting[cpu] = 0;
+	if (this->qtime) {
+		@ = quantize((timestamp - this->qtime)/1000);
+		q[curlwpsinfo->pr_addr] = 0;
+		@st[stack()] = count();
+		if (timestamp - this->qtime > 100*1000*1000) {
+			printf("thread %p scheduler delay = %ums\n",
+			    curlwpsinfo->pr_addr,
+			    (timestamp - this->qtime)/1000/1000);
+		}
+	}
+}
+
+/*
+poke_cpu:entry
+{
+	if (args[0] == 1) {
+		stack();
+	}
+}
+*/
+
+/*
+disp:return
+{
+	if (cpu == 1) {
+		printf("%s -> %p\n",
+		    probefunc,
+		    arg1);
+	}
+}
+*/
+
+profile-997
+{
+	/* only record stack if we have waited for more than 1ms */
+	if (cpu_waiting[cpu] && timestamp - cpu_waiting[cpu] > 1000*1000) {
+		@waitfor[stack()] = count();
+		@waitforthr[curthread] = count();
+	}
+}
+
+/*
+xc_serv:return
+{
+	@xc[cpu] = sum(entry->elapsed_ns);
+}
+
+tick-1s
+{
+	printa(@xc);
+	clear(@xc);
+}
+*/
+
+#if 0
+setbackdq:enqueue
+{
+	this->t = (kthread_t *)args[0]->pr_addr;
+	if (tgt[this->t] && this->t->t_bound_cpu->cpu_id == 1) {
+	/*if (this->t->t_bound_cpu != NULL && callers["mac_soft_ring_worker_wakeup"]) {*/
+		this->dp = this->t->t_cpu->cpu_disp;
+		this->dq = &this->t->t_cpu->cpu_disp->disp_q[this->t->t_pri];
+		this->maxrunpri = this->dp->disp_maxrunpri;
+		if (this->maxrunpri != -1 && this->maxrunpri < this->t->t_pri) {
+			self->bound = 1;
+			printf("%s sruncnt=%d pri=%d dispatch_pri=%d cpu_chosen_level=%d curthr_pri=%d maxrunpri=%d thr=%p curthr=%p\n",
+			    probefunc,
+			    this->dq->dq_sruncnt,
+			    this->t->t_pri,
+			    this->t->t_cpu->cpu_dispatch_pri,
+			    this->t->t_cpu->cpu_chosen_level,
+			    this->t->t_cpu->cpu_thread->t_pri,
+			    this->maxrunpri,
+			    this->t,
+			    this->t->t_cpu->cpu_thread);
+			this->name = "unknown";
+			if (this->dq->dq_first && this->dq->dq_first->t_taskq) {
+				this->tq = (taskq_t *)this->dq->dq_first->t_taskq;
+				this->name = this->tq->tq_name;
+			}
+			printf("    runthr=%p (%s)\n",
+			    this->dq->dq_first,
+			    this->name);
+			@blockers[this->dq->dq_first] = count();
+		}
+	}
+}
+
+cpu_resched:entry
+{
+	if (self->bound) {
+	/*if (args[0]->cpu_id == 1) {*/
+		printf("    %s from %a tpri=%d dispatch_pri=%d maxrunpri=%d runrun=%u kprunrun=%u\n",
+		    probefunc,
+		    caller,
+		    args[1],
+		    args[0]->cpu_dispatch_pri,
+		    args[0]->cpu_disp->disp_maxrunpri,
+		    args[0]->cpu_runrun,
+		    args[0]->cpu_kprunrun);
+	}
+}
+
+cpu_wakeup:entry
+{
+	if (self->bound) {
+		printf("    %s curcpu=%u target cpuid=%u\n",
+		    probefunc,
+		    cpu,
+		    args[0]->cpu_id);
+	}
+}
+
+bitset_in_set:return
+{
+	if (self->bound && callers["cpu_wakeup"]) {
+		printf("    %s -> %u\n",
+		    probefunc,
+		    arg1);
+	}
+}
+
+poke_cpu:entry
+{
+	if (self->bound) {
+	/*if (args[0] == 1) {*/
+		/*stack();*/
+		printf("    %s cpuid=%u\n",
+		    probefunc,
+		    args[0]);
+	}
+}
+
+setbackdq:return
+{
+	self->bound = 0;
+}
+#endif
+
+END
+{
+	printf("stacks that waited:");
+	trunc(@st, 5);
+	printa(@st);
+
+	printf("\nstacks that specified threads waited for -> ms waited:");
+	trunc(@waitfor, 5);
+	printa(@waitfor);
+
+	printf("\nthreads that specified threads waited for -> ms waited:");
+	trunc(@waitforthr, 5);
+	printa("%p %@u\n", @waitforthr);
+
+	printf("\ntime waited (microseconds):");
+	printa(@);
+
+#if 0
+	printa("%p %@u\n", @blockers);
+#endif
+}

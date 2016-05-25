@@ -1,0 +1,38 @@
+#!/usr/sbin/dtrace -qs
+
+pid$target::lzc_send_space:return
+{
+	printf("%s(%s, %s) -> %ums\n",
+	    probefunc,
+	    copyinstr(entry->arg0),
+	    copyinstr(entry->arg1),
+	    entry->elapsed_ms);
+}
+
+zfs_ioc_send_space:return
+{
+	printf("%s(%s) -> %ums\n",
+	    probefunc,
+	    stringof(entry->args[0]),
+	    entry->elapsed_ms);
+}
+
+dmu_send_estimate_from_txg:return
+{
+	printf("%s(%s, %u) -> %u bytes, %ums\n",
+	    probefunc,
+	    stringof(entry->args[0]->ds_dir->dd_myname),
+	    entry->args[1],
+	    *(entry->args[4]),
+	    entry->elapsed_ms);
+}
+
+traverse_dataset:return
+/callers["dmu_send_estimate_from_txg"]/
+{
+	printf("%s(%s, %u) -> %ums\n",
+	    probefunc,
+	    stringof(entry->args[0]->ds_dir->dd_myname),
+	    entry->args[1],
+	    entry->elapsed_ms);
+}

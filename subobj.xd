@@ -1,0 +1,18 @@
+dmu_object_info:return
+{
+	if (callers["bpobj_enqueue_subobj"])
+		print(*entry->args[2]);
+}
+
+dmu_write:entry
+/callers["bpobj_enqueue_subobj"]/
+{
+	printf("dmu_write(obj=%u off=%u len=%u data=%p)\n",
+	    args[1], args[2], args[3], args[4]);
+}
+
+dmu_write:entry
+/callers["bpobj_enqueue_subobj"] && args[3] > 128*1024/
+{
+	breakpoint();
+}

@@ -1,0 +1,233 @@
+#!/usr/sbin/dtrace -Cs
+
+#pragma D option quiet
+#pragma D option switchrate=10hz
+#pragma D option aggrate=10hz
+#pragma D option aggsortkey
+#pragma D option experimental
+
+typedef enum zio_priority {
+	ZIO_PRIORITY_SYNC_READ,
+	ZIO_PRIORITY_SYNC_WRITE,	/* ZIL */
+	ZIO_PRIORITY_ASYNC_READ,	/* prefetch */
+	ZIO_PRIORITY_ASYNC_WRITE,	/* spa_sync() */
+	ZIO_PRIORITY_SCRUB,		/* asynchronous scrub/resilver reads */
+	ZIO_PRIORITY_MAX_QUEUEABLE
+} zio_priority_t;
+
+int64_t thread_delay;
+int64_t throttle;
+spa_t *spa;
+
+vdev_queue_pending_remove:entry
+/!spa && stringof(args[1]->io_spa->spa_name) == $$1/
+{
+	spa = args[1]->io_spa;
+}
+
+spa_sync:entry
+/args[0] == spa/
+{
+	printf("  spa_sync(txg=%u) starting\n",
+	    args[1]);
+}
+
+spa_sync:return
+/entry->args[0] == spa/
+{
+	printf("  spa_sync(txg=%u) took %ums\n",
+	    entry->args[1], entry->elapsed_ms);
+}
+
+dsl_pool_sync:return
+/entry->args[0]->dp_spa == spa/
+{
+	printf("  %s(pass=%u) took %ums\n",
+	    probefunc, spa->spa_sync_pass, entry->elapsed_ms);
+}
+
+vdev_queue_pending_remove:entry
+/args[1]->io_spa == spa/
+{
+	if (args[1]->io_type == ZIO_TYPE_WRITE) {
+		@write_ios = count();
+		@write_kb = sum(args[1]->io_size / 1024);
+	} else {
+		@read_ios = count();
+		@read_kb = sum(args[1]->io_size / 1024);
+	}
+	@queued_sr = max(spa->spa_queue_stats[ZIO_PRIORITY_SYNC_READ].spa_queued);
+	@active_sr = max(spa->spa_queue_stats[ZIO_PRIORITY_SYNC_READ].spa_active);
+	@queued_sw = max(spa->spa_queue_stats[ZIO_PRIORITY_SYNC_WRITE].spa_queued);
+	@active_sw = max(spa->spa_queue_stats[ZIO_PRIORITY_SYNC_WRITE].spa_active);
+	@queued_ar = max(spa->spa_queue_stats[ZIO_PRIORITY_ASYNC_READ].spa_queued);
+	@active_ar = max(spa->spa_queue_stats[ZIO_PRIORITY_ASYNC_READ].spa_active);
+	@queued_aw = max(spa->spa_queue_stats[ZIO_PRIORITY_ASYNC_WRITE].spa_queued);
+	@active_aw = max(spa->spa_queue_stats[ZIO_PRIORITY_ASYNC_WRITE].spa_active);
+	@queued_s = max(spa->spa_queue_stats[ZIO_PRIORITY_SCRUB].spa_queued);
+	@active_s = max(spa->spa_queue_stats[ZIO_PRIORITY_SCRUB].spa_active);
+}
+
+#define MAX(a, b) ((a) > (b) ? (a) : (b))
+
+dmu_tx_delay:delay-mintime
+{
+	@throttle_us = max((arg2 + 999) / 1000);
+	this->tx = (dmu_tx_t *)arg0;
+	this->thread_delay = (int64_t)(this->tx->tx_pool->dp_last_wakeup + arg2 - timestamp);
+	this->thread_delay = this->thread_delay > 0 ? this->thread_delay : 0;
+	self->throttle_and_thread = this->thread_delay > 0 ? this->thread_delay : arg2;
+
+	@thread_delay_us = max(this->thread_delay > 0 ? (this->thread_delay + 999) / 1000 : 0);
+
+	throttle += arg2;
+	@thread_delay_x100 = avg(this->thread_delay * 100 / arg2);
+	@thread_delay = sum(this->thread_delay);
+}
+
+dmu_tx_delay:return
+/self->throttle_and_thread/
+{
+	@sched_delay_us = avg((int64_t)(entry->elapsed_ns - self->throttle_and_thread) / 1000);
+	@delay_max_us = max(entry->elapsed_us + 1);
+	@delay_avg = avg(entry->elapsed_ns);
+	self->throttle_and_thread = 0;
+}
+
+uint64_t retired_b;
+
+dsl_pool_undirty_space:entry
+/args[0]->dp_spa == spa/
+{
+	@undirtied_kb = sum(args[1] / 1024);
+	lastretired = timestamp;
+}
+
+vdev_queue_max_async_writes:return
+{
+	async_write_max_active = arg1;
+}
+
+tick-10hz
+/spa/
+{
+	this->vdevs = spa->spa_root_vdev->vdev_children;
+
+	printa("rd=%@3u (%@5uKB) wr=%@3u (%@5uKB) undirtied=%@5uKB ",
+	    @read_ios, @read_kb, @write_ios, @write_kb, @undirtied_kb);
+#if 0
+	printa("throttle=%@4dus delay=%@5dus (avg=%@5dus; max thread delay=%@5dus) ",
+		@throttle_us, @delay_us, @delay_avg_us, @thread_delay_us);
+#endif
+	normalize(@thread_delay_x100, 100);
+	normalize(@delay_avg, 1000 * 1000);
+	normalize(@sched_delay_us, 1000);
+	printa("delay=%@3ums = %@3uus (throttle) x %@3u (concurrent) + %@1ums (sched) ",
+	    @delay_avg, @throttle_us, @thread_delay_x100, @sched_delay_us);
+	printf("dirty=%u%% ",
+	    spa->spa_dsl_pool->dp_dirty_total * 100 / `zfs_dirty_data_max);
+
+	/*
+	 * queued / active / max ios, broken down by
+	 * s (sync) vs a (async) and r (read) vs w (write)
+	 * and s (scrub)
+	 */
+#if 1
+	printf("q/a/m: ");
+
+	printa("sr=%@u/%@u", @queued_sr, @active_sr);
+	printf("/%u ", `zfs_vdev_sync_read_max_active * this->vdevs);
+	clear(@queued_sr);
+	clear(@active_sr);
+	    
+	printa("sw=%@u/%@u", @queued_sw, @active_sw);
+	printf("/%u ", `zfs_vdev_sync_write_max_active * this->vdevs);
+	clear(@queued_sw);
+	clear(@active_sw);
+	    
+	printa("ar=%@u/%@u", @queued_ar, @active_ar);
+	printf("/%u ", `zfs_vdev_async_read_max_active * this->vdevs);
+	clear(@queued_ar);
+	clear(@active_ar);
+
+	printa("aw=%@u/%@u", @queued_aw, @active_aw);
+	printf("/%u ", async_write_max_active * this->vdevs);
+	clear(@queued_aw);
+	clear(@active_aw);
+
+	printa("s=%@u/%@u", @queued_s, @active_s);
+	printf("/%u ", `zfs_vdev_scrub_max_active * this->vdevs);
+	clear(@queued_s);
+	clear(@active_s);
+#else
+	    "/%u sw=%u/%u/%u ar=%u/%u/%u aw=%u/%u/%u s=%u/%u/%u ",
+
+	    spa->spa_queue_stats[ZIO_PRIORITY_SYNC_READ].spa_queued,
+	    spa->spa_queue_stats[ZIO_PRIORITY_SYNC_READ].spa_active,
+	    `zfs_vdev_sync_read_max_active * this->vdevs,
+	    spa->spa_queue_stats[ZIO_PRIORITY_SYNC_WRITE].spa_queued,
+	    spa->spa_queue_stats[ZIO_PRIORITY_SYNC_WRITE].spa_active,
+	    `zfs_vdev_sync_write_max_active * this->vdevs,
+	    spa->spa_queue_stats[ZIO_PRIORITY_ASYNC_READ].spa_queued,
+	    spa->spa_queue_stats[ZIO_PRIORITY_ASYNC_READ].spa_active,
+	    `zfs_vdev_async_read_max_active * this->vdevs,
+	    spa->spa_queue_stats[ZIO_PRIORITY_ASYNC_WRITE].spa_queued,
+	    spa->spa_queue_stats[ZIO_PRIORITY_ASYNC_WRITE].spa_active,
+	    async_write_max_active * this->vdevs,
+	    spa->spa_queue_stats[ZIO_PRIORITY_SCRUB].spa_queued,
+	    spa->spa_queue_stats[ZIO_PRIORITY_SCRUB].spa_active,
+	    `zfs_vdev_scrub_max_active * this->vdevs);
+	printf("q/a/m: sr=%u/%u/%u sw=%u/%u/%u ar=%u/%u/%u aw=%u/%u/%u s=%u/%u/%u ",
+	    spa->spa_queue_stats[ZIO_PRIORITY_SYNC_READ].spa_queued,
+	    spa->spa_queue_stats[ZIO_PRIORITY_SYNC_READ].spa_active,
+	    `zfs_vdev_sync_read_max_active * this->vdevs,
+	    spa->spa_queue_stats[ZIO_PRIORITY_SYNC_WRITE].spa_queued,
+	    spa->spa_queue_stats[ZIO_PRIORITY_SYNC_WRITE].spa_active,
+	    `zfs_vdev_sync_write_max_active * this->vdevs,
+	    spa->spa_queue_stats[ZIO_PRIORITY_ASYNC_READ].spa_queued,
+	    spa->spa_queue_stats[ZIO_PRIORITY_ASYNC_READ].spa_active,
+	    `zfs_vdev_async_read_max_active * this->vdevs,
+	    spa->spa_queue_stats[ZIO_PRIORITY_ASYNC_WRITE].spa_queued,
+	    spa->spa_queue_stats[ZIO_PRIORITY_ASYNC_WRITE].spa_active,
+	    async_write_max_active * this->vdevs,
+	    spa->spa_queue_stats[ZIO_PRIORITY_SCRUB].spa_queued,
+	    spa->spa_queue_stats[ZIO_PRIORITY_SCRUB].spa_active,
+	    `zfs_vdev_scrub_max_active * this->vdevs);
+	printf("q/a: sr=%u/%u sw=%u/%u ar=%u/%u aw=%u/%u s=%u/%u ",
+	    spa->spa_queue_stats[ZIO_PRIORITY_SYNC_READ].spa_queued,
+	    spa->spa_queue_stats[ZIO_PRIORITY_SYNC_READ].spa_active,
+	    spa->spa_queue_stats[ZIO_PRIORITY_SYNC_WRITE].spa_queued,
+	    spa->spa_queue_stats[ZIO_PRIORITY_SYNC_WRITE].spa_active,
+	    spa->spa_queue_stats[ZIO_PRIORITY_ASYNC_READ].spa_queued,
+	    spa->spa_queue_stats[ZIO_PRIORITY_ASYNC_READ].spa_active,
+	    spa->spa_queue_stats[ZIO_PRIORITY_ASYNC_WRITE].spa_queued,
+	    spa->spa_queue_stats[ZIO_PRIORITY_ASYNC_WRITE].spa_active,
+	    spa->spa_queue_stats[ZIO_PRIORITY_SCRUB].spa_queued,
+	    spa->spa_queue_stats[ZIO_PRIORITY_SCRUB].spa_active);
+#endif
+
+	printf("\n");
+
+	clear(@read_ios);
+	clear(@read_kb);
+	clear(@write_ios);
+	clear(@write_kb);
+	clear(@undirtied_kb);
+	clear(@throttle_us);
+	clear(@delay_max_us);
+	clear(@delay_avg);
+	clear(@thread_delay_us);
+	clear(@thread_delay_x100);
+	clear(@sched_delay_us);
+	clear(@sched_delay_us);
+	thread_delay = 0;
+	throttle = 0;
+}
+
+arc_adjust:return
+{
+	this->ms = entry->elapsed_ms;
+	if (this->ms > 10) {
+		printf("arc_adjust() ran for %ums\n", this->ms);
+	}
+}

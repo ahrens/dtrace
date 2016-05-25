@@ -1,0 +1,23 @@
+#!/usr/sbin/dtrace -qs
+
+metaslab_sync:entry,
+metaslab_sync_done:entry
+/args[0]->ms_group->mg_vd->vdev_spa->spa_name != "rpool"/
+{
+	printf("%s(vdev=%u ms=%u txg=%u pass=%u)\n",
+	    probefunc, 
+	    args[0]->ms_group->mg_vd->vdev_id,
+	    args[0]->ms_id, args[1],
+	    args[0]->ms_group->mg_vd->vdev_spa->spa_sync_pass);
+}
+
+vdev_dirty:entry
+/args[0]->vdev_spa->spa_name != "rpool" && args[1] & 1/
+{
+	printf("%s(vdev=%u ms=%u txg=%u)\n",
+	    probefunc,
+	    args[0]->vdev_id,
+	    ((metaslab_t*)args[2])->ms_id,
+	    args[3]);
+	stack();
+}

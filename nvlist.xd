@@ -1,0 +1,120 @@
+#pragma D option quiet
+
+/*
+ * Note: it's very easy to generate more DOF than the kernel will handle
+ * by default.  You can either reduce the number of iterations below
+ * (from "while20" to "while2") or increase the kernel's limit,
+ * e.g. to 16MB by running:
+ *     echo dtrace_dof_maxsize/W1000000 | sudo mdb -kw
+ */
+
+#define	NV_ALIGN(x) (((ulong_t)(x) + 7ul) & ~7ul)
+#define NVI_NAME(nvi) stringof((char *)(&((nvi)->nvi_nvp) + 1))
+#define NVI_VALUE(nvi) ((char *)(&nvi->nvi_nvp) + NV_ALIGN(sizeof (nvpair_t) + nvi->nvi_nvp.nvp_name_sz))
+#define NVL_FIRSTNVI(nvl) (((nvpriv_t *)(uintptr_t)((nvl)->nvl_priv))->nvp_list)
+
+#define NVD_STACKFRAMES 10
+
+typedef struct nvdump_stack {
+	int ns_curframe;
+	nvlist_t *ns_nvl[NVD_STACKFRAMES];
+	i_nvp_t *ns_elem[NVD_STACKFRAMES];
+} nvdump_stack_t;
+
+this nvdump_stack_t _nvds;
+
+#define CURFRAME (this->_nvds.ns_curframe)
+#define ELEM (this->_nvds.ns_elem[CURFRAME])
+#define NVL (this->_nvds.ns_nvl[CURFRAME])
+
+#define nvlist_dump(in_nvl)							\
+    	CURFRAME = 0;								\
+	NVL = (in_nvl);								\
+	ELEM = NVL_FIRSTNVI(NVL);						\
+										\
+	while20 (ELEM != NULL) {						\
+		printf("%*s%s", CURFRAME * 4, "", NVI_NAME(ELEM));		\
+		if (ELEM->nvi_nvp.nvp_type == DATA_TYPE_BOOLEAN) { 		\
+			printf("\n");						\
+			ELEM = ELEM->_nvi_un._nvi._nvi_next;			\
+		} else if (ELEM->nvi_nvp.nvp_type == DATA_TYPE_UINT64) { 	\
+			printf(": %u\n", *(uint64_t *)NVI_VALUE(ELEM));		\
+			ELEM = ELEM->_nvi_un._nvi._nvi_next;			\
+		} else if (ELEM->nvi_nvp.nvp_type == DATA_TYPE_STRING) {	\
+			printf(": %s\n", stringof((char *)NVI_VALUE(ELEM))); 	\
+			ELEM = ELEM->_nvi_un._nvi._nvi_next;			\
+		} else if (ELEM->nvi_nvp.nvp_type == DATA_TYPE_NVLIST) {	\
+			printf(":\n");						\
+			if (CURFRAME + 1 < NVD_STACKFRAMES) {			\
+				CURFRAME++;					\
+				NVL = (nvlist_t *)NVI_VALUE(this->_nvds.ns_elem[CURFRAME - 1]); \
+				ELEM = NVL_FIRSTNVI(NVL);			\
+			} else {						\
+				printf("%*s<recursion exhausted>\n",		\
+				    (CURFRAME + 1) * 4, "");			\
+				ELEM = ELEM->_nvi_un._nvi._nvi_next;		\
+			}							\
+		} else {							\
+			printf(": <unknown type %u>\n",				\
+			    ELEM->nvi_nvp.nvp_type);				\
+			ELEM = ELEM->_nvi_un._nvi._nvi_next;			\
+		} 								\
+		if (ELEM == NULL && CURFRAME > 0) {				\
+			CURFRAME--;						\
+			ELEM = ELEM->_nvi_un._nvi._nvi_next;			\
+		}								\
+	}									\
+	if (ELEM != NULL) {							\
+		printf("%*s<iteration exhausted>\n", CURFRAME * 4, "");		\
+	}
+
+#define nvlist_lookup_string(in_nvl, in_name, out_value)			\
+	this->_elem = NVL_FIRSTNVI(in_nvl);					\
+										\
+	while40 (this->_elem != NULL) {						\
+		if ((in_name) == NVI_NAME(this->_elem) &&			\
+		    this->_elem->nvi_nvp.nvp_type == DATA_TYPE_STRING) {	\
+		        out_value = stringof((char *)NVI_VALUE(this->_elem));	\
+			this->_elem = NULL;					\
+		} else {							\
+			this->_elem = this->_elem->_nvi_un._nvi._nvi_next;	\
+		}								\
+	}									\
+	if (this->_elem != NULL)						\
+		out_value = "<iteration exhausted>";
+
+#if 0
+put_nvlist:entry
+{
+	stack();
+	nvlist_dump(args[1])
+	this->hn = "";
+	nvlist_lookup_string(args[1], "hostname", this->hn)
+	if (this->hn != "")
+		printf("found host name: %s\n", this->hn);
+}
+#endif
+
+zfs_create:entry
+{
+	printf("creating %s in %s\n", stringof(args[1]), stringof(args[0]->v_path));
+	this->dzp = (znode_t *)(args[0]->v_data);
+	if (this->dzp->z_mooch_map != NULL) {
+		nvlist_dump(this->dzp->z_mooch_map);
+	} else {
+		printf("  NULL mooch map\n");
+	}
+}
+
+dmu_object_refresh_mooch_obj:entry
+{
+	printf("refreshing %u\n", args[1]);
+}
+
+nvlist_lookup_uint64:return
+/callers["zfs_create"]/
+{
+	printf("lookup(%s) -> %u, err=%u\n", 
+	    stringof(entry->args[1]), *entry->args[2], arg1);
+}
+

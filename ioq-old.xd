@@ -1,0 +1,128 @@
+#pragma D option quiet
+#pragma D option switchrate=10hz
+#pragma D option aggrate=10hz
+
+typedef enum zio_priority {
+	ZIO_PRIORITY_SYNC_READ,
+	ZIO_PRIORITY_SYNC_WRITE,	/* ZIL */
+	ZIO_PRIORITY_ASYNC_READ,	/* prefetch */
+	ZIO_PRIORITY_ASYNC_WRITE,	/* spa_sync() */
+	ZIO_PRIORITY_SCRUB,		/* asynchronous scrub/resilver reads */
+	ZIO_PRIORITY_MAX_QUEUEABLE
+} zio_priority_t;
+
+spa_t *spa;
+
+zfs_read:return
+{
+	@l[probefunc] = quantize((timestamp - entry->timestamp) / 1000);
+}
+
+
+vdev_queue_pending_remove:entry
+/!spa && stringof(args[1]->io_spa->spa_name) == $$1/
+{
+	spa = args[1]->io_spa;
+}
+
+spa_sync:entry
+/args[0] == spa/
+{
+	printf("  spa_sync(txg=%u) starting\n",
+	    args[1]);
+}
+
+spa_sync:return
+/entry->args[0] == spa/
+{
+	printf("  spa_sync(txg=%u) took %ums\n",
+	    entry->args[1], (timestamp - entry->timestamp)/1000000);
+}
+
+dsl_pool_sync:return
+/entry->args[0]->dp_spa == spa/
+{
+	printf("  %s(pass=%u) took %ums\n",
+	    probefunc, spa->spa_sync_pass,
+	    (timestamp - entry->timestamp)/1000000);
+}
+
+vdev_queue_io_remove:entry
+/args[1]->io_spa == spa/
+{
+	if (args[1]->io_type == ZIO_TYPE_READ)
+		@l[probefunc] = quantize((timestamp - args[1]->io_timestamp) / 1000);
+}
+
+vdev_queue_pending_add:entry
+/stringof(args[1]->io_spa->spa_name) == $$1/
+{
+	activate[args[1]] = timestamp;
+}
+
+vdev_queue_pending_remove:entry
+/activate[args[1]]/
+{
+	if (args[1]->io_type == ZIO_TYPE_WRITE) {
+		@write_ios = count();
+		@write_kb = sum(args[1]->io_size / 1024);
+	} else {
+		@read_ios = count();
+		@read_kb = sum(args[1]->io_size / 1024);
+	}
+	@lat[args[1]->io_priority] = quantize((timestamp - activate[args[1]]) / 1000);
+	activate[args[1]] = 0;
+
+}
+
+zio_read:entry
+{
+	@r[stack()] = count();
+}
+
+
+vdev_queue_max_async_writes:return
+{
+	async_write_max_active = arg1;
+}
+
+tick-10hz
+/spa/
+{
+	this->vdevs = spa->spa_root_vdev->vdev_children;
+
+	printa("reads=%@3u (%@5uKB) writes=%@3u (%@5uKB) ",
+	    @read_ios, @read_kb, @write_ios, @write_kb);
+	printf("dirty=%4u/%uMB ",
+	    spa->spa_dsl_pool->dp_dirty_total / 1024 / 1024,
+	    `zfs_dirty_data_max / 1024 / 1024);
+
+	/*
+	 * queued / active / max ios, broken down by
+	 * s (sync) vs a (async) and r (read) vs w (write)
+	 * and s (scrub)
+	 */
+	printf("q/a/m: sr=%u/%u/%u sw=%u/%u/%u ar=%u/%u/%u aw=%u/%u/%u s=%u/%u/%u ",
+	    spa->spa_queue_stats[ZIO_PRIORITY_SYNC_READ].spa_queued,
+	    spa->spa_queue_stats[ZIO_PRIORITY_SYNC_READ].spa_active,
+	    `zfs_vdev_sync_read_max_active * this->vdevs,
+	    spa->spa_queue_stats[ZIO_PRIORITY_SYNC_WRITE].spa_queued,
+	    spa->spa_queue_stats[ZIO_PRIORITY_SYNC_WRITE].spa_active,
+	    `zfs_vdev_sync_write_max_active * this->vdevs,
+	    spa->spa_queue_stats[ZIO_PRIORITY_ASYNC_READ].spa_queued,
+	    spa->spa_queue_stats[ZIO_PRIORITY_ASYNC_READ].spa_active,
+	    `zfs_vdev_async_read_max_active * this->vdevs,
+	    spa->spa_queue_stats[ZIO_PRIORITY_ASYNC_WRITE].spa_queued,
+	    spa->spa_queue_stats[ZIO_PRIORITY_ASYNC_WRITE].spa_active,
+	    async_write_max_active * this->vdevs,
+	    spa->spa_queue_stats[ZIO_PRIORITY_SCRUB].spa_queued,
+	    spa->spa_queue_stats[ZIO_PRIORITY_SCRUB].spa_active,
+	    `zfs_vdev_scrub_max_active * this->vdevs);
+
+	printf("\n");
+
+	clear(@read_ios);
+	clear(@read_kb);
+	clear(@write_ios);
+	clear(@write_kb);
+}

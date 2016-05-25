@@ -1,0 +1,20 @@
+/*
+ * this is a great example of the need for -xdefaultscope=local and
+ * "for" loops
+ */
+uiomove:entry
+/callers["zfs_write"]/
+{
+	this->uio = args[3];
+	trace(this->uio->uio_iovcnt);
+	if (this->uio->uio_iovcnt > 1) {
+		stack();
+		this->i = 0;
+		while50 (this->i < this->uio->uio_iovcnt) {
+			printf("%p %u",
+			    this->uio->uio_iov[this->i].iov_base,
+			    this->uio->uio_iov[this->i].iov_len);
+			this->i++;
+		}
+	}
+}

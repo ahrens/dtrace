@@ -1,0 +1,32 @@
+#!/usr/sbin/dtrace -s
+
+sa_find_sizes:return
+{
+	printf("attr_count=%u -> rv(hdrsize)=%u index=%u total=%u will_spill=%u",
+	    entry->args[2],
+	    arg1,
+	    *entry->args[5],
+	    *entry->args[6],
+	    *entry->args[7]);
+}
+
+dmu_set_bonus:entry
+{
+	printf("obj=%u size=%u txg=%u",
+	    args[0]->db_object,
+	    args[1],
+	    args[2]->tx_txg);
+}
+
+dmu_rm_spill:entry
+{
+	printf("obj=%u txg=%u",
+	    args[1],
+	    args[2]->tx_txg);
+}
+
+dmu_spill_hold_by_dnode:entry
+{
+	printf("obj=%u",
+	    args[0]->dn_object);
+}

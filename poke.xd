@@ -1,0 +1,105 @@
+#!/usr/sbin/dtrace -qs
+
+BEGIN
+{
+	poketime = 0;
+}
+
+poke_cpu:entry
+{
+	if (args[0] == 1) {
+		/*
+		printf("    %s cpuid=%u\n",
+		    probefunc,
+		    args[0]);
+		*/
+		if (poketime == 0) {
+			poketime = timestamp;
+		}
+	}
+}
+
+apic_intr_enter:return
+{
+	if (cpu == 1 && poketime) {
+		@asdf[arg1] = count();
+		@[probefunc] = quantize(timestamp - poketime);
+	}
+}
+
+interrupt-start
+{
+	if (cpu == 1 && poketime) {
+		@intrfunc[(void *)arg1] = count();
+	}
+}
+
+
+disp:entry
+{
+	if (cpu == 1 && poketime) {
+		@[probefunc] = quantize(timestamp - poketime);
+		poketime = 0;
+	}
+}
+
+av_dispatch_autovect:entry
+{
+	if (cpu == 1 && poketime) {
+		@av[arg0] = count();
+	}
+	
+}
+
+hilevel_intr_prolog:entry
+{
+	if (args[0]->cpu_id == 1) {
+		@prol[args[1], args[2], args[0]->cpu_intr_actv] = count();
+	}
+
+}
+
+hilevel_intr_epilog:entry
+{
+	if (args[0]->cpu_id == 1) {
+		@intrs[args[0]->cpu_intr_actv] = count();
+	}
+}
+
+/*
+disp:return
+{
+	if (cpu == 1) {
+		printf("%s -> %p\n",
+		    probefunc,
+		    arg1);
+	}
+}
+
+profile-997
+{
+	if (poketime && cpu == 1) {
+		@waitfor[stack()] = count();
+		@waitforthr[curthread] = count();
+	}
+}
+*/
+
+/*
+xc_serv:return
+{
+	@xc[cpu] = sum(entry->elapsed_ns);
+}
+
+tick-1s
+{
+	printa(@xc);
+	clear(@xc);
+}
+*/
+
+/*
+END
+{
+}
+*/

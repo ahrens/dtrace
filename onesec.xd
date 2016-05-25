@@ -1,0 +1,68 @@
+
+#pragma D option quiet
+#pragma D option switchrate=10hz
+
+vdev_queue_pending_add:entry
+/args[1]->io_spa->spa_name == "test"/
+{
+	start[args[1]] = timestamp;
+}
+
+vdev_queue_pending_remove:entry
+/start[args[1]]/
+{
+	this->ms = (timestamp - start[args[1]]) / 1000 / 1000
+	start[args[1]] = 0;
+	if (this->ms > 500) {
+		printf("i/o took %ums type=%u\n", this->ms, args[1]->io_type);
+	}
+	@ = lquantize(this->ms, 0, 5000, 100);
+}
+
+#if 0
+zio_ioctl:return
+/entry->args[0]->io_spa->spa_name == "test"/
+{
+	printf("flushing...\n");
+	fio=(zio_t*)arg1;
+	ftime=timestamp;
+}
+
+zio_done:entry
+/args[0] == fio/
+{
+	printf("done, took %ums\n", (timestamp-ftime)/1000000);
+	fio = 0;
+}
+#endif
+
+spa_sync:entry
+/args[0]->spa_name == "test"/
+{
+	printf("beginning sync\n");
+}
+
+spa_sync:return
+/entry->args[0]->spa_name == "test"/
+{
+	printf("ending sync\n");
+}
+
+tick-10hz
+{
+	printf("#");
+	/*printf("100ms elapsed\n");*/
+}
+
+#if 0
+tick-1s
+{
+	printa(@_);
+	trunc(@_);
+}
+#endif
+
+END
+{
+	printa(@_);
+}

@@ -1,0 +1,73 @@
+#!/usr/sbin/dtrace -s
+
+#pragma D option quiet
+#pragma D option aggsortkey
+#pragma D option dynvarsize=1m
+
+metaslab_block_alloc:entry
+/args[0]->ms_group->mg_class->mc_spa->spa_name == $$1/
+{
+	@alloc_per_ms[args[0]->ms_group->mg_vd->vdev_id, args[0]->ms_id] = count();
+	@weight[args[0]->ms_group->mg_vd->vdev_id, args[0]->ms_id] = max(args[0]->ms_weight);
+	@size = llquantize(args[1], 8, 0, 10, 8);
+}
+
+metaslab_block_alloc:return
+/entry->args[0]->ms_group->mg_class->mc_spa->spa_name == $$1/
+{
+	if (arg1 == -1) {
+		@failed[entry->args[0]->ms_group->mg_vd->vdev_id,
+		    entry->args[0]->ms_id, entry->args[1]] = count();
+	}
+}
+
+metaslab_group_alloc:return
+/entry->args[0]->mg_class->mc_spa->spa_name == $$1/
+{
+	if (arg1 == -1) {
+		@failed_group[entry->args[0]->mg_vd->vdev_id, entry->args[2]] = count();
+	} else {
+		@bytes_per_group[entry->args[0]->mg_vd->vdev_id] = sum(entry->args[2]);
+	}
+}
+
+metaslab_block_alloc:entry
+/args[0]->ms_group->mg_class->mc_spa->spa_name == $$1 && args[0]->ms_group->mg_vd->vdev_path/
+{
+	@alloc_per_ms_named[stringof(args[0]->ms_group->mg_vd->vdev_path), args[0]->ms_id] = count();
+}
+
+zio_write_gang_block:entry
+/args[0]->io_spa->spa_name == $$1/
+{
+	@gangs = count();
+}
+
+spa_sync:return
+/entry->args[0]->spa_name == $$1/
+{
+	printf("\ntxg %u took %ums to sync\n",
+	    entry->args[1], entry->elapsed_ms);
+	printa(@alloc_per_ms_named);
+	trunc(@alloc_per_ms_named);
+	printa("vdev=%2u metaslab=%3u allocations=%5@u weight=0x%@x\n",
+	    @alloc_per_ms, @weight);
+	trunc(@alloc_per_ms);
+	trunc(@weight);
+	printa("vdev=%2u metaslab=%3u size=%u failed=%@u\n",
+	    @failed);
+	trunc(@failed);
+	printa("vdev=%2u size=%u failed=%@u\n",
+	    @failed_group);
+	trunc(@failed_group);
+	printa("gang allocations: %@u\n",
+	    @gangs);
+	trunc(@gangs);
+	normalize(@bytes_per_group, 1024*1024);
+	printa("vdev=%2u allocd=%@uMB\n",
+	    @bytes_per_group);
+	trunc(@bytes_per_group);
+	printf("allocation sizes in bytes:");
+	printa(@size);
+	trunc(@size);
+}

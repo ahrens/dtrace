@@ -1,0 +1,6 @@
+
+lockstat:::adaptive-acquire
+/callers["dnode_setdirty,zfs_read"]/
+{
+	@[stack()] = count();
+}

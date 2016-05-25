@@ -1,0 +1,29 @@
+#!/usr/sbin/dtrace -s
+
+dmu_sync:entry
+{
+	
+}
+
+dmu_write_policy:return
+/callers["dmu_sync"]/
+{
+	print(*entry->args[4]);
+}
+
+arc_write:entry
+/callers["dmu_sync"]/
+{
+	print(*args[7]);
+}
+
+zio_nop_write:entry
+{
+	print(args[0]->io_bp_orig);
+	print(*args[0]->io_bp);
+}
+
+zio_nop_write:return
+{
+	printf("%x", entry->args[0]->io_flags);
+}

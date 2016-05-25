@@ -1,0 +1,51 @@
+#!/usr/sbin/dtrace -qs
+
+#pragma D option bufpolicy=ring
+#pragma D option bufsize=1g
+
+spa_stall_free:entry
+{
+	this->svr = args[0]->vdev_spa->spa_vdev_removal;
+	printf("%s off=%x len=%x txg=%x (max_synced=%x to_sync=%x %x %x %x)\n",
+	    probefunc,
+	    args[1],
+	    args[2],
+	    args[3],
+	    this->svr->svr_max_synced_offset,
+	    this->svr->svr_max_offset_to_sync[0],
+	    this->svr->svr_max_offset_to_sync[1],
+	    this->svr->svr_max_offset_to_sync[2],
+	    this->svr->svr_max_offset_to_sync[3]);
+
+}
+
+remove-free-inflight
+{
+	this->spa = (spa_t*)arg0;
+	printf("%s off=%x len=%x txg=%x (to_sync=%x)\n",
+	    probename,
+	    arg1,
+	    arg2,
+	    arg3,
+	    this->spa->spa_vdev_removal->svr_max_offset_to_sync[arg3 & 3]);
+}
+
+remove-free-synced,
+remove-free-unvisited
+{
+	this->spa = (spa_t*)arg0;
+	printf("%s off=%x len=%x (max_sync=%x)\n",
+	    probename,
+	    arg1,
+	    arg2,
+	    this->spa->spa_vdev_removal->svr_max_synced_offset);
+}
+
+spa_vdev_copy_segment:entry
+{
+	printf("%s off=%x len=%x txg=%x\n",
+	    probefunc,
+	    args[1],
+	    args[2],
+	    args[3]);
+}

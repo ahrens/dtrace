@@ -1,0 +1,67 @@
+#!/usr/sbin/dtrace -s
+
+#pragma D option quiet
+#pragma D option dynvarsize=16M
+
+avl_find:return,
+avl_nearest:return,
+avl_walk:return
+/callers["metaslab_block_picker"]/
+{
+	self->rs = (range_seg_t*)arg1;
+	@calls[probefunc] = count();
+}
+
+metaslab_block_picker:entry
+{
+	self->entry_cursor = *args[1];
+}
+
+metaslab_block_picker:return
+{
+	if (arg1 == -1ULL) {
+		@failed["FAILED", entry->args[2], 0] = count();
+	} else {
+		/*@arg[entry->args[0]->avl_compar, self->entry_cursor, entry->args[2], entry->args[3]] = count();*/
+		@arg[entry->args[0]->avl_compar, entry->args[2], entry->args[3]] = count();
+		/*@remainder[entry->args[2]] = lquantize(self->rs->rs_end - arg1 - entry->args[2], 0, 64*1024, 512);*/
+		@remainder[entry->args[2]] = quantize(self->rs->rs_end - arg1 - entry->args[2]);
+	}
+	self->rs = NULL;
+}
+
+/*
+metaslab_bf_alloc:return
+{
+	if (arg1 == -1ULL) {
+		@failed["FAILED", entry->args[1], entry->args[2]] = count();
+	} else {
+		@params[entry->args[1], entry->args[2] / entry->args[1]] = count();
+		@remainder[entry->args[1]] = quantize(self->rs->rs_end - arg1 - entry->args[1]);
+	}
+	self->rs = NULL;
+}
+
+metaslab_alloc_bf:entry
+{
+	self->tries++;
+}
+
+metaslab_group_alloc_bf:return
+{
+	@tries[entry->args[1]] = quantize(self->tries);
+	self->tries = 0;
+}
+*/
+
+END
+{
+	trunc(@remainder, 5);
+	/*trunc(@params, 20); */
+	trunc(@failed, 20);
+	printa("%a, size=%u, align=%u count=%@u\n", @arg);
+	printa(@failed);
+	printa(@remainder);
+	
+	/*printa("allocation: %6u segment: %ux count: %@6u\n", @params);*/
+}

@@ -1,0 +1,39 @@
+#!/usr/sbin/dtrace -s
+
+mpt_alloc_extra_cmd_mem:return,
+ddi_dma_mem_alloc:return,
+i_ddi_mem_alloc:return
+/arg1 != 0/
+{
+	printf("args: %x %x %x %x %x %x %x %x",
+	    entry->arg0, entry->arg1, entry->arg2, entry->arg3,
+	    entry->arg4, entry->arg5, entry->arg6, entry->arg7);
+	stack();
+}
+
+kalloca:return,
+is_contigpage_free:return
+/arg1 == 0/
+{
+	printf("args: %x %x %x %x %x",
+	    entry->arg0, entry->arg1, entry->arg2, entry->arg3,
+	    entry->arg4);
+	stack();
+}
+
+
+mpt_log:entry
+{
+	stack();
+}
+
+page_create:entry,
+kalloca:entry,
+vmem_xalloc:entry,
+kmem_cache_alloc:entry,
+ddi_dma_mem_alloc:entry,
+ddi_dma_alloc_handle:entry
+/callers["mpt_scsi_start"]/
+{
+	@[probefunc, stack()]=count();
+}

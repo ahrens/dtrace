@@ -1,0 +1,34 @@
+#!/usr/sbin/dtrace -qs
+
+spa_sync:entry
+/args[0]->spa_name == $$1/
+{
+	self->yes=1;
+}
+
+vdev_config_sync:return
+/self->yes/
+{
+	printf("txg=%u %ums\n", entry->args[2], entry->elapsed_ms);
+}
+
+vdev_config_sync:return,
+vdev_config_clean:return,
+dsl_pool_sync_done:return,
+vdev_sync_done:return,
+spa_update_dspace:return,
+dsl_pool_sync:return,
+metaslab_sync_done:return,
+metaslab_sync_reassess:return,
+spa_sync:return
+/self->yes/
+{
+	printf("%s %uus\n", probefunc, entry->elapsed_us);
+}
+
+range_tree_vacate:return,
+metaslab_group_sort:return
+/self->yes && callers["metaslab_sync_done"]/
+{
+	printf("%s %uus\n", probefunc, entry->elapsed_us);
+}

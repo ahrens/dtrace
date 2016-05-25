@@ -1,0 +1,45 @@
+#!/usr/sbin/dtrace -s
+
+#pragma D option quiet
+#pragma D option nspec=1000
+
+dsl_pool_config_enter:return
+{
+	self->enter = timestamp;
+	self->spec = speculation();
+}
+
+sched:::off-cpu
+/self->enter/
+{
+	self->sleeptime = timestamp;
+}
+
+sched:::on-cpu
+/self->sleeptime/
+{
+	this->ms = (timestamp - self->sleeptime) / 1000 / 1000;
+	if (this->ms > 50) {
+		speculate(self->spec);
+		stack();
+		printf("%d\n\n", this->ms);
+	}
+	self->sleeptime = 0;
+}
+
+dsl_pool_config_exit:entry
+/self->enter/
+{
+	this->ms = (timestamp - self->enter) / 1000 / 1000;
+	if (this->ms > 1000) {
+		printf("%Y held config lock for %ums from:\n",
+		    walltimestamp, this->ms);
+		stack();
+		printf("slept from:\n");
+		if (1)
+			commit(self->spec);
+	} else {
+		discard(self->spec);
+	}
+	self->enter = 0;
+}

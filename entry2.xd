@@ -1,0 +1,21 @@
+spa_sync:return
+{
+	trace(timestamp - entry->timestamp);
+	@[probefunc] = sum(walltimestamp - entry->walltimestamp);
+	printf("%s(%s, %u)", probefunc, entry->args0->spa_name, entry->arg1);
+}
+
+zfs:dmu_tx_*:return
+{
+	@[probefunc] = sum(timestamp - entry->timestamp);
+}
+
+/*
+zfs::return
+{
+	if (entry->vtimestamp == 0) {
+		printf("vts=%u wts=%u ts=%u\n", entry->vtimestamp, entry->walltimestamp, entry->timestamp);
+		exit(1);
+	}
+}
+*/

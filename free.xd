@@ -1,0 +1,22 @@
+
+dnode_evict_dbufs:entry
+{
+	print(args[0]->dn_dbufs_count);
+}
+
+dnode_evict_dbufs:return
+{
+	print(entry->args[0]->dn_dbufs_count);
+}
+
+dbuf_free_range:entry
+{
+	print(args[0]->dn_dbufs_count);
+}
+
+dbuf_free_range:return,
+dnode_evict_dbufs:return,
+dmu_free_long_range:return
+{
+	@[probefunc] = sum(entry->elapsed_us);
+}

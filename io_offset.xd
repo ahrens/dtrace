@@ -1,0 +1,71 @@
+#!/usr/sbin/dtrace -Cs
+
+#pragma D option quiet
+#pragma D option switchrate=1hz
+#pragma D option aggrate=1hz
+#pragma D option aggsortkey
+
+spa_t *spa;
+
+long long lastoff[vdev_t *];
+long long lastback[vdev_t *];
+
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
+#define MAX(a, b) ((a) > (b) ? (a) : (b))
+
+vdev_queue_io_remove:entry
+/args[1]->io_spa->spa_name == $$1/
+{
+	if (lastoff[args[1]->io_vd]) {
+		this->delta = (long long)(args[1]->io_offset - lastoff[args[1]->io_vd]);
+		this->delta = MIN(this->delta, 1024*1024 * 16);
+		this->delta = MAX(this->delta, -1024);
+		@[this->delta ? "num discontiguous" : "num contiguous"] = count();
+
+		/*@delta_vdev[stringof(args[1]->io_vd->vdev_path)] =
+		 * quantize(this->delta / 1024);*/
+		if (this->delta) {
+			@vdev_discontiguous[stringof(args[1]->io_vd->vdev_path)] = count();
+			@delta = quantize(this->delta / 1024);
+		} else {
+			@vdev_contiguous[stringof(args[1]->io_vd->vdev_path)] = count();
+		}
+#if 0
+		if (this->delta < 0) {
+			if (lastback[args[1]->io_vd]) {
+				printf("%ums since last backwards seek on vdev id %u\n",
+				    (timestamp - lastback[args[1]->io_vd])/1000/1000,
+				    args[1]->io_vd->vdev_id);
+			}
+			lastback[args[1]->io_vd] = timestamp;
+		}
+#endif
+	}
+	lastoff[args[1]->io_vd] = args[1]->io_offset + args[1]->io_size;
+	/*printf("%u %u\n", (timestamp - start)/1000, args[1]->io_offset);*/
+}
+
+spa_sync:return
+/entry->args[0]->spa_name == $$1/
+{
+	printf("\n");
+	printf("txg %u took %ums:\n", entry->args[1], entry->elapsed_ms);
+
+	/*
+	printa(@delta_vdev);
+	clear(@delta_vdev);
+	*/
+	printa("%-20s contig: %@u discontig: %@u\n",
+	    @vdev_contiguous, @vdev_discontiguous);
+	clear(@vdev_contiguous);
+	clear(@vdev_discontiguous);
+
+	printf("delta from end of last i/o, in KB, for non-contiguous i/os:\n");
+	printf("(range limited to -1 to 16MB)\n");
+	printf("total for all vdevs:\n");
+	printa(@delta);
+	clear(@delta);
+
+	printa(@);
+	clear(@);
+}

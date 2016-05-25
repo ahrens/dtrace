@@ -1,0 +1,16 @@
+
+arc_get_data_buf:entry
+{
+	self->recycled = "no eviction needed";
+}
+
+arc_evict:return
+{
+	self->recycled = (arg1 != 0) ? "recycled" : "not recycled";
+}
+
+arc_get_data_buf:return
+{
+	@time[self->recycled] = avg(entry->elapsed_us);
+	@hist[self->recycled] = quantize(entry->elapsed_us);
+}

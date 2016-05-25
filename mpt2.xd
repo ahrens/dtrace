@@ -1,0 +1,14 @@
+#!/usr/sbin/dtrace -s
+
+kalloca:return,
+is_contigpage_free:return
+/callers["mpt_alloc_extra_cmd_mem"]/
+{
+	printf("args: %x %x %x %x %x",
+	    entry->arg0, entry->arg1, entry->arg2, entry->arg3,
+	    entry->arg4);
+	/*stack();*/
+	@[probefunc] = count();
+}
+
+

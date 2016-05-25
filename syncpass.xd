@@ -1,0 +1,132 @@
+#!/usr/sbin/dtrace -s
+
+#pragma D option quiet
+#pragma D option aggsortkey
+#pragma D option aggrate=10hz
+#pragma D option switchrate=10hz
+
+spa_free_sync_cb:entry
+{
+	@spa_free_sync_cb = count();
+}
+
+fbt::spa_sync:entry
+/stringof(args[0]->spa_name) == $$1/
+{
+        self->ss = timestamp;
+	self->total = 0;
+	self->txg = args[1];
+	done[0] = 0;
+	done[1] = 0;
+	done[2] = 0;
+	done[3] = 0;
+	done[4] = 0;
+	done[5] = 0;
+	done[6] = 0;
+	done[7] = 0;
+	done[8] = 0;
+	done[9] = 0;
+	done[10] = 0;
+	done[11] = 0;
+	done[12] = 0;
+	done[13] = 0;
+	done[14] = 0;
+	done[15] = 0;
+	done[16] = 0;
+	done[17] = 0;
+	done[18] = 0;
+	done[19] = 0;
+	done[20] = 0;
+}
+
+fbt::metaslab_sync:return,
+fbt::metaslab_sync_done:return,
+fbt::spa_sync_deferred_frees:return,
+fbt::spa_sync_frees:return,
+fbt::ddt_sync:return,
+fbt::dsl_scan_sync:return,
+fbt::vdev_config_sync:return
+/self->ss/
+{
+	this->name = probefunc;
+        @t[this->name] = sum(timestamp - entry->timestamp);
+        @p[this->name] = sum(timestamp - entry->timestamp);
+	self->total += timestamp - entry->timestamp;
+}
+
+fbt::dsl_pool_sync:entry
+/self->ss/
+{
+        self->pass = args[0]->dp_spa->spa_sync_pass;
+	if (done[self->pass])
+		printf("already saw pass %u!\n", self->pass);
+        passname = self->pass > 3 ?
+            " pass > 3 " : strjoin(" pass ", lltostr(self->pass));
+	done[self->pass] = 1;
+}
+
+fbt::dsl_pool_sync_mos:return
+/self->ss/
+{
+	if (self->pass == 1) {
+		this->name = "dsl_pool_sync_mos (pass 1)";
+		@t[this->name] = sum(timestamp - entry->timestamp);
+		@p[this->name] = sum(timestamp - entry->timestamp);
+	}
+}
+
+vdev_queue_pending_remove:entry
+{
+	this->io = args[1];
+	if (this->io->io_type == ZIO_TYPE_WRITE &&
+	    this->io->io_bookmark.zb_level != -2 &&
+	    passname != NULL) {
+		@s[passname] = sum(this->io->io_size);
+	}
+}
+
+fbt::dsl_pool_sync:return
+/self->ss/
+{
+        @t[passname] = sum(timestamp - entry->timestamp);
+        @p[passname] = sum(timestamp - entry->timestamp);
+	self->total += timestamp - entry->timestamp;
+	passname = NULL;
+}
+
+zio_wait:return
+/self->ss/
+{
+	this->ms = (timestamp - entry->timestamp) / 1000 / 1000;
+	if (this->ms > 100) {
+		printf("zio_wait() took %ums from:\n", this->ms);
+		stack();
+	}
+}
+
+profile-377
+/self->ss && !self->ts/
+{
+	@other[stack()] = count();
+}
+
+fbt::spa_sync:return
+/self->ss/
+{
+        this->delta = timestamp - entry->timestamp;
+	@t["other"] = sum(this->delta - self->total);
+	@p["other"] = sum(this->delta - self->total);
+        normalize(@s, 1000000);
+        normalize(@t, 1000000);
+        normalize(@p, this->delta / 100);
+        printa("  %30s %@10dMB %@10dms (%@2d%%)\n", @s, @t, @p);
+        printf("%Y spa_sync(txg=%u) took %10dms (%d passes)\n\n",
+            walltimestamp, self->txg, this->delta / 1000000, self->pass);
+	printa("calls to spa_free_sync_cb: %@d\n", @spa_free_sync_cb);
+        self->pass = 0;
+        self->ss = 0;
+        clear(@s);
+        clear(@t);
+        clear(@p);
+        clear(@spa_free_sync_cb);
+}

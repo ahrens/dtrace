@@ -1,0 +1,37 @@
+#!/usr/sbin/dtrace -s
+
+arc_shrink:entry
+{
+	stack();
+}
+
+arc_reclaim_needed:return
+/arg1/
+{
+	stack();
+	if (`needfree) {
+		printf("needfree > 0");
+	} else if (`freemem < `lotsfree + `needfree + `desfree) {
+		printf("freemem < lotsfree + needfree + desfree");
+		printf("%u < %u + %u + %u",
+		    `freemem, `lotsfree, `needfree, `desfree);
+	} else if (`availrmem < `swapfs_minfree + `swapfs_reserve + `desfree) {
+		printf("availrmem < swapfs_minfree + swapfs_reserve + desfree");
+		printf("%u < %u + %u + %u",
+		    `availrmem, `swapfs_minfree, `swapfs_reserve, `desfree);
+	} else if (`availrmem < `pages_pp_maximum) {
+		printf("availrmem < pages_pp_maximum");
+		printf("%u < %u",
+		    `availrmem, `pages_pp_maximum);
+	} else if (`zio_arena->vm_kstat.vk_mem_total.value.ui64 - 
+	    `zio_arena->vm_kstat.vk_mem_inuse.value.ui64 <
+	    `zio_arena->vm_kstat.vk_mem_inuse.value.ui64 << 4) {
+		printf("zio_arena->FREE < zio_arena->ALLOC / 16");
+		printf("%u < %u",
+		    `zio_arena->vm_kstat.vk_mem_total.value.ui64 -
+		    `zio_arena->vm_kstat.vk_mem_inuse.value.ui64,
+		    `zio_arena->vm_kstat.vk_mem_inuse.value.ui64 << 4);
+	} else {
+		printf("unknown reason");
+	}
+}

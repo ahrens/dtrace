@@ -1,0 +1,58 @@
+#!/usr/sbin/dtrace -Cs
+
+#pragma D option quiet
+#pragma D option switchrate=10hz
+
+#define LBOLT ((timestamp / `nsec_per_tick) - `lb_info->lbi_debug_time)
+
+BEGIN
+{
+	typename[0] = "null";
+	typename[1] = "read";
+	typename[2] = "write";
+	typename[3] = "free";
+	typename[4] = "claim";
+	typename[5] = "ioctl";
+
+	prioname[0] = "sync (deadline=0)";
+	prioname[1] = "cache/agg (deadline=64t)";
+	prioname[4] = "asyncw (deadline=256t)";
+	prioname[6] = "asyncr (deadline=384t)";
+	prioname[10] = "resilver (deadline=640t)";
+	prioname[11] = "scrub (deadline=704t)";
+	prioname[2] = "ddt_prefetch (deadline=128t)";
+
+	last = timestamp;
+}
+
+uint64_t ts[zfs`vdev_queue_t*];
+
+vdev_queue_io_remove:entry
+{
+	this->zio = (zfs`zio_t*)args[1];
+	if (stringof(this->zio->io_spa->spa_name) == $$1) {
+		@queuetime[typename[this->zio->io_type], prioname[this->zio->io_priority]] =
+		    quantize(LBOLT - this->zio->io_timestamp);
+		this->vq = (zfs`vdev_queue_t*)args[0];
+		if (timestamp > ts[this->vq] + 100000000) {
+			printf("%ums elapsed: queue depth for %s = %u reads, %u writes (%u pending)\n",
+			    (timestamp - ts[this->vq]) / 1000000,
+			    stringof(this->zio->io_vd->vdev_path),
+			    this->vq->vq_read_tree.avl_numnodes,
+			    this->vq->vq_write_tree.avl_numnodes,
+			    this->vq->vq_pending_tree.avl_numnodes);
+			ts[this->vq] = timestamp;
+		}
+	}
+}
+
+
+tick-10s
+{
+	printf("\n=============\n");
+	printf("time spent in queue (measured in tens of milliseconds, count is total for last 10 seconds):\n");
+	/* normalize(@queuetime, (timestamp - last) / 1000000000); */
+	printa("type=%s priority=%s%@u\n", @queuetime);
+	trunc(@queuetime);
+	last = timestamp;
+}

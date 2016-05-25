@@ -1,0 +1,104 @@
+#!/usr/sbin/dtrace -s
+
+#pragma D option quiet
+#pragma D option aggsortpos=2
+#pragma D option aggrate=10hz
+#pragma D option switchrate=10hz
+#pragma D option dynvarsize=10m
+
+fbt::spa_sync:entry
+/stringof(args[0]->spa_name) == $$1/
+{
+        self->yes = 1;
+}
+
+spa_sync_frees:entry
+/self->yes/
+{
+	sync_frees=1;
+}
+
+spa_sync_frees:return
+/self->yes/
+{
+	sync_frees=0;
+
+        this->delta = timestamp - entry->timestamp;
+        @c[probefunc] = count();
+        @t[probefunc] = sum(this->delta);
+        @p[probefunc] = sum(this->delta);
+}
+
+#if 0
+zio_free_sync:entry
+/sync_frees/
+{
+	if ((args[3]->blk_dva[0].dva_word[1] >> 63) & 1) {
+		@c["free(gang)"] = count();
+	} else {
+		@c["free(non-gang)"] = count();
+	}
+}
+#endif
+
+metaslab_free_dva:return
+/sync_frees/
+{
+        this->delta = timestamp - entry->timestamp;
+
+        @c[probefunc] = count();
+        @t[probefunc] = sum(this->delta);
+        @p[probefunc] = sum(this->delta);
+
+	@q[probefunc] = quantize(this->delta/1000);
+	@callers[stack()] = count();
+}
+
+space_map_add:entry
+/sync_frees && callers["metaslab_free_dva"]/
+{
+	@entries = quantize(args[0]->sm_root.avl_numnodes);
+}
+
+space_map_*:return,
+zio_dva_free:return
+/sync_frees && callers["metaslab_free_dva"]/
+{
+        this->delta = timestamp - entry->timestamp;
+
+        @c[probefunc] = count();
+        @t[probefunc] = sum(this->delta);
+        @p[probefunc] = sum(this->delta);
+}
+
+fbt::spa_sync:return
+/self->yes/
+{
+        this->delta = timestamp - entry->timestamp;
+
+        @c[probefunc] = count();
+        @t[probefunc] = sum(this->delta);
+        @p[probefunc] = sum(this->delta);
+
+        normalize(@t, 1000000);
+        normalize(@p, this->delta / 100);
+
+	printf("txg %u:\n", entry->args[1]);
+        printa("%-30s  %@5d times  %@10dms (%@2d%%)\n", @c, @t, @p);
+        printf("\n");
+        clear(@c);
+        clear(@t);
+        clear(@p);
+
+	printa(@q);
+	clear(@q);
+
+	printf("entries in avl tree when space_map_add called from metaslab_free_dva:\n");
+	printa(@entries);
+	clear(@entries);
+
+	printf("callers of metaslab_free_dva:");
+	printa(@callers);
+	trunc(@callers);
+}
+

@@ -1,0 +1,53 @@
+
+BEGIN
+{
+	targetobj = 8;
+}
+
+dnode_sync:entry
+/args[0]->dn_object == targetobj/
+{
+	printf("syncing, allocated_txg=%u dnp_type=%u",
+	    args[0]->dn_allocated_txg, args[0]->dn_phys->dn_type);
+}
+
+dmu_tx_hold_object_impl:return
+{
+	this->txh = (dmu_tx_hold_t *)arg1;
+	if (entry->args[2] == targetobj) {
+		printf("=================================\n");
+		stack();
+		print(*this->txh->txh_dnode);
+		printf("\nfreeing obj=%u off=%u len=%d\n",
+		    entry->args[2], entry->args[4], (long long)entry->args[5]);
+		printf("datablkshift=%u\n", this->txh->txh_dnode->dn_datablkshift);
+		breakpoint();
+	}
+}
+
+dmu_free_long_range:entry
+/args[1] == targetobj/
+{
+	printf("=========================\n");
+	stack();
+	printf("free long range obj=%u off=%u len=%u\n",
+	    args[1], args[2], args[3]);
+}
+
+dnode_free_range:entry
+/args[0]->dn_object == targetobj/
+{
+	printf("free_range off=%u len=%u maxblkid=%u\n", args[1], args[2], args[0]->dn_maxblkid);
+}
+
+dnode_free_range:return
+/entry->args[0]->dn_object == targetobj/
+{
+	printf("max_blkid=%u\n", entry->args[0]->dn_maxblkid);
+}
+
+dmu_tx_count_write:entry
+/callers["dmu_tx_hold_free"]/
+{
+	printf("count_write: off=%u len=%d\n", args[1], args[2]);
+}

@@ -1,0 +1,18 @@
+
+spa_sync:return
+{
+	trace(timestamp - entry->timestamp);
+	trace(entry->timestamp);
+}
+
+spa_sync:return
+{
+	trace(timestamp - entry->timestamp);
+}
+
+/*
+spa_sync:return
+{
+	self->_DPP_entry->timestamp[stackdepth, probeprov, probemod, probefunc] = 0;
+}
+*/

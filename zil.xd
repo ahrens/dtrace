@@ -1,0 +1,48 @@
+#!/usr/sbin/dtrace -s
+
+zil_commit:entry
+{
+	self->records = 0;
+	self->blocks = 0;
+	self->ts = timestamp;
+}
+
+list_remove:entry
+/self->ts/
+{
+	self->records++;
+}
+
+zil_lwb_write_start:entry
+/self->ts/
+{
+	self->blocks++;
+}
+
+zil_commit:return
+{
+	@["zil_commit time in microseconds"] = quantize(entry->elapsed_us);
+	@a["zil_commit time in microseconds"] = avg(entry->elapsed_us);
+	@["records per commit"] = quantize(self->records);
+	@["blocks per commit"] = quantize(self->blocks);
+}
+
+zil_commit_writer:return
+{
+	@["zil_commit_writer time in microseconds"] = quantize(entry->elapsed_us);
+	@a["zil_commit_writer time in microseconds"] = avg(entry->elapsed_us);
+	@a["records per commit_writer"] = avg(self->records);
+	@a["blocks per commit_writer"] = avg(self->blocks);
+}
+
+zio_alloc_zil:entry
+{
+	@["zil block alloc size"] = quantize(args[4]);
+	@a["zil block alloc size"] = avg(args[4]);
+}
+
+zio_shrink:entry
+{
+	@["zil block write size"] = quantize(args[1]);
+	@a["zil block write size"] = avg(args[1]);
+}

@@ -1,0 +1,37 @@
+#!/usr/sbin/dtrace -s
+
+dmu_object_alloc:entry
+{
+	print(args[0]);
+}
+
+dmu_object_alloc:return
+{
+	print(arg1);
+}
+
+dnode_hold_impl:entry
+/callers["dmu_object_alloc"]/
+{
+	print(args[1]);
+}
+
+dnode_hold_impl:return
+/callers["dmu_object_alloc"]/
+{
+	print(arg1);
+}
+
+
+dmu_object_next:entry
+/callers["dmu_object_alloc"]/
+{
+	print(*args[1]);
+}
+
+dmu_object_next:return
+/callers["dmu_object_alloc"]/
+{
+	print(*entry->args[1]);
+}
+

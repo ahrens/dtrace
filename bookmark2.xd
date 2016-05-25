@@ -1,0 +1,22 @@
+#!/usr/sbin/dtrace -s
+
+dsl_destroy_snapshot_sync_impl:entry
+{
+	printf("%s", args[0]->ds_snapname);
+}
+
+bpobj_space:return
+/callers["dsl_deadlist_insert_bpobj"] && callers["dsl_deadlist_merge"] && !callers["bpobj_enqueue_subobj"]/
+{
+	printf("%u %u %u\n",
+	    *entry->args[1], *entry->args[2], *entry->args[3]);
+	stack();
+}
+
+dsl_deadlist_space_range:return
+/callers["dsl_bookmark_ds_destroyed"]/
+{
+	printf("%u %u %u\n",
+	    *entry->args[3], *entry->args[4], *entry->args[5]);
+	stack();
+}

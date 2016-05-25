@@ -1,0 +1,48 @@
+cv_waituntil_sig:return
+/pid == $target/
+{
+	self->elapsed = timestamp - entry->timestamp;
+	printf("elapsed=%uus rv=%d\n",
+	    self->elapsed / 1000,
+	    (int)arg1);
+}
+
+cv_timedwait_sig_hrtime:return
+/pid == $target/
+{
+	printf("requested=%uus elapsed=%uus rv=%d\n",
+	    (entry->args[2] - entry->timestamp) / 1000,
+	    (timestamp - entry->timestamp) / 1000,
+	    (int)arg1);
+}
+
+long long self calls;
+
+timespecadd:entry
+/pid == $target/
+{
+	printf("ts=%us %uus\n", args[0]->tv_sec, args[0]->tv_nsec / 1000);
+}
+
+syscall::write:entry
+/pid == $target/
+{
+	printf("clock_gettime called %u times\n", self->calls);
+	self->calls = 0;
+	printf("%u %s\n", timestamp - self->last, probefunc);
+	self->last = timestamp
+}
+
+pid$target::usec_sleep:entry
+{
+	printf("%s(%uus)\n", probefunc, arg1);
+}
+
+long long self last;
+
+clock_gettime:entry
+/pid == $target/
+{
+	self->calls++;
+	@[ustack()] = count();
+}

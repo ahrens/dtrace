@@ -1,0 +1,35 @@
+#!/usr/sbin/dtrace -qs
+
+metaslab_group_alloc:entry
+/stringof(args[0]->mg_class->mc_spa->spa_name) == $$1 &&
+args[0]->mg_vd->vdev_id == 4/
+{
+	printf("thr %p allocating %u bytes from vdev=%u qdepth=%u\n",
+	    curthread,
+	    args[1],
+	    args[0]->mg_vd->vdev_id,
+	    args[0]->mg_vd->vdev_async_write_queue_depth);
+}
+
+metaslab_group_allocatable:return
+/stringof(entry->args[0]->mg_class->mc_spa->spa_name) == $$1 &&
+entry->args[0]->mg_vd->vdev_id == 4/
+{
+	printf("thr %p %s(vdev=%u, qdepth=%u); non-throttled vdevs=%u -> %u\n",
+	    curthread,
+	    probefunc,
+	    entry->args[0]->mg_vd->vdev_id,
+	    entry->args[0]->mg_vd->vdev_async_write_queue_depth,
+	    entry->args[0]->mg_class->mc_groups - entry->args[0]->mg_class->mc_groups_throttled,
+	    arg1);
+}
+
+/*
+metaslab_alloc_throttle:return
+{
+	printf("thr %p %s() -> %u\n",
+	    curthread,
+	    probefunc,
+	    arg1);
+}
+*/

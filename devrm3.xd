@@ -1,0 +1,9 @@
+#!/usr/sbin/dtrace -s
+
+spa_vdev_copy_segment:return
+/arg1 == ENOSPC/
+{
+	printf("alloc size=%x txg=%x failed",
+	    entry->args[2],
+	    entry->args[3]);
+}

@@ -1,0 +1,55 @@
+#pragma D option quiet
+#pragma D option dynvarsize=10M
+
+BEGIN
+{
+	timeoff = 0;
+}
+
+metaslab_load:entry
+{
+	self->total_offtime = 0;
+}
+
+sched:::off-cpu
+/callers["metaslab_load"]/
+{
+	self->offtime = timestamp;
+	offtime[curlwpsinfo->pr_addr] = timestamp;
+}
+
+sched:::wakeup
+/offtime[args[0]->pr_addr]/
+{
+	this->us = (timestamp - offtime[args[0]->pr_addr]) / 1000;
+	offtime[args[0]->pr_addr] = 0;
+	@wakefrom[stack()] = quantize(this->us);
+
+}
+
+metaslab_load:return
+{
+	printf("loaded in %ums, %ums off-cpu\n",
+	    entry->elapsed_ms, self->total_offtime / 1000);
+	self->total_offtime = 0;
+}
+
+
+sched:::on-cpu
+/self->offtime/
+{
+	this->us = (timestamp - self->offtime) / 1000;
+	self->total_offtime += this->us;
+	@sleepfrom[stack()] = quantize(this->us);
+	self->offtime = 0;
+}
+
+END
+{
+	printf("*********** wait from: us waited ************\n");
+	trunc(@sleepfrom, 10);
+	printa(@sleepfrom);
+	printf("*********** woken from: us waited ************\n");
+	trunc(@wakefrom, 10);
+	printa(@wakefrom);
+}

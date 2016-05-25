@@ -1,0 +1,42 @@
+
+#pragma D option quiet
+
+spa_sync:entry
+/args[0]->spa_name == $$1/
+{
+	spa = args[0];
+	printf("syncing txg %u\n", args[1]);
+}
+
+space_map_write:entry
+/args[0]->sm_os->os_spa == spa/
+{
+	/*
+	printf("writing %u %s ranges to obj %u from %a\n",
+	    args[1]->rt_root.avl_numnodes,
+	    args[2] ? "free" : "alloc",
+	    args[0]->sm_object,
+	    caller);
+	*/
+	if (args[2] == SM_ALLOC)
+		@allocs = quantize(args[1]->rt_root.avl_numnodes);
+	else
+		@frees = quantize(args[1]->rt_root.avl_numnodes);
+	@records = quantize(args[1]->rt_root.avl_numnodes);
+}
+
+spa_sync:return
+/entry->args[0] == spa/
+{
+	/*
+	printf("number of allocations:");
+	printa(@allocs);
+	printf("number of frees:");
+	printa(@frees);
+	*/
+	printf("number of records written per call to space_map_write:");
+	printa(@records);
+	trunc(@allocs);
+	trunc(@frees);
+	/*trunc(@records);*/
+}

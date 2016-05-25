@@ -1,0 +1,23 @@
+#!/usr/sbin/dtrace -qs
+
+metaslab_group_sort:entry
+/stringof(args[0]->mg_class->mc_spa->spa_name) == $$1 &&
+args[0]->mg_vd->vdev_id == 4 && callers["metaslab_activate"]/
+{
+	printf("thread=%p activating  vdev=%u ms=%u weight=%uKB\n",
+	    curthread,
+	    args[0]->mg_vd->vdev_id,
+	    args[1]->ms_id,
+	    args[1]->ms_weight / 1024);
+}
+
+metaslab_passivate:entry
+/stringof(args[0]->ms_group->mg_class->mc_spa->spa_name) == $$1 &&
+args[0]->ms_group->mg_vd->vdev_id == 4/
+{
+	printf("thread=%p passivating vdev=%u ms=%u weight=%x\n",
+	    curthread,
+	    args[0]->ms_group->mg_vd->vdev_id,
+	    args[0]->ms_id,
+	    args[0]->ms_weight);
+}

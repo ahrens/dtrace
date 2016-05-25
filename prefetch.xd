@@ -1,0 +1,172 @@
+#!/usr/sbin/dtrace -Cs
+
+#pragma D option quiet
+#pragma D option experimental
+#pragma D option aggsortkey
+
+#pragma D option dynvarsize=10m
+
+inline int ARC_PREFETCH = 1<<3;
+inline int ARC_IN_HASH_TABLE = 1<<9;
+inline int ARC_IO_IN_PROGRESS = 1<<10;
+
+BEGIN
+{
+	last = timestamp;
+	typename[0] = "unknown";
+	typename[1] = "forward sequential";
+	typename[2] = "forward strided";
+	typename[3] = "backward sequential";
+	typename[4] = "backward strided";
+}
+
+dmu_zfetch_dofetch:entry
+{
+	self->zs = args[1];
+}
+
+dmu_zfetch_dofetch:return
+{
+	self->zs = 0;
+}
+
+arc_read:entry
+{
+	self->done = args[3];
+	self->arc_flags = args[7];
+}
+
+arc_read:return
+{
+	self->done = 0;
+}
+
+zio_read:return
+{
+	this->zio = (zio_t *)arg1;
+	this->buf = (arc_buf_t *)this->zio->io_private;
+	/*if (this->zio->io_priority == ZIO_PRIORITY_ASYNC_READ) {*/
+	if (self->done == NULL) {
+		@["prefetch_reads_started"] = count();
+		/* @prefetch_stacks[stack()] = count(); */
+
+		this->type = 0;
+		if (self->zs) {
+			@["prefetch_reads_started by zfetch"] = count();
+			this->type = (self->zs->zst_direction == ZFETCH_FORWARD) ? 
+			    (self->zs->zst_stride == self->zs->zst_len ?  1 : 2) :
+			    (self->zs->zst_stride == self->zs->zst_len ?  3 : 4);
+			@[strjoin("prefetch_read ", typename[this->type])] = count();
+			/*@stride = quantize(self->zs->zst_stride);*/
+			/*print(*self->zs);*/
+			/*p[this->buf->b_hdr] = self->zs;*/
+		}
+		prefetched_hdrs[this->buf->b_hdr] = (timestamp & ~0xf) | this->type;
+	}
+}
+
+add_reference:entry
+{
+	this->hdr = args[0];
+	if (args[0]->b_flags & ARC_PREFETCH) {
+		if (args[0]->b_flags & ARC_IO_IN_PROGRESS) {
+			@["demand_wait_prefetch"] = count();
+		} else {
+			@["demand_hit"] = count();
+		}
+	} else {
+		@["demand_hit"] = count();
+	}
+	this->pf = prefetched_hdrs[this->hdr];
+	if (this->pf) {
+		this->delta = (timestamp - this->pf)/1000/1000;
+		this->type = this->pf & 0xf;
+		if (this->delta > 10000) {
+			@["demand_hit_prefetch (>10 sec old)"] = count();
+		} else {
+			@["demand_hit_prefetch (<10 sec old)"] = count();
+/*
+			if (p[this->hdr] && this->type != 1) {
+				print(*p[this->hdr]);
+			}
+*/
+			@unused_prefetches = sum(-1);
+		}
+		@[strjoin("demand_hit_prefetch ", typename[this->type])] = count();
+
+		@prefetch_hit_age = quantize(this->delta);
+		prefetched_hdrs[this->hdr] = 0;
+	}
+}
+
+buf_hash_find:return
+/callers["arc_read"]/
+{
+	this->hdr = (arc_buf_hdr_t*)arg1;
+	if (this->hdr != NULL && this->hdr->b_datacnt > 0 &&
+	!(this->hdr->b_flags & (1<<10)) && (this->hdr->b_flags & (1<<3))
+	&& !((*self->arc_flags) & (1<<3))) {
+		@["demand_hit_prefetch (kstat measurement)"] = count();
+	}
+}
+
+arc_read_done:entry
+{
+	this->buf = (arc_buf_t *)args[0]->io_private;
+
+	/* embedded bps don't result in i/o and are not in the hash table */
+	if (this->buf->b_hdr->b_flags & ARC_IN_HASH_TABLE) {
+		if (args[0]->io_priority == ZIO_PRIORITY_ASYNC_READ) {
+			@["prefetch_reads_completed"] = count();
+			@unused_prefetches = sum(1);
+		} else {
+			@["demand_reads_completed"] = count();
+		}
+	}
+}
+
+/*
+ * When a prefetched header changes state (e.g. to the ghost list), consider it
+ * a permanent loss.  This helps reduce the size of the prefetched_hdrs
+ * associative array, thus reducing "dynamic variable drops".
+ */
+arc_change_state:entry
+{
+	prefetched_hdrs[args[1]] = 0;
+}
+
+dmu_zfetch:return
+{
+	@time["dmu_zfetch"] = quantize(entry->elapsed_us);
+	@zfetch_ns = sum(entry->elapsed_ns);
+}
+
+tick-2s
+{
+	normalize(@, (timestamp - last) / 1000 / 1000 / 1000);
+	printa("%-40s   %@5u/sec\n", @);
+
+	normalize(@unused_prefetches, (timestamp - last) / 1000 / 1000 / 1000);
+	printa("unused prefetches: %@d/sec\n", @unused_prefetches);
+
+	normalize(@zfetch_ns, (timestamp - last) / 1000);
+	printa("time in dmu_zfetch: %@ums/sec\n", @zfetch_ns);
+
+	printf("\n");
+
+	/*
+	printf("stride distance:");
+	printa(@stride);
+	*/
+
+	printf("prefetch hit age (ms):");
+	printa(@prefetch_hit_age);
+
+	/*
+	printf("hit count per arcbuf:");
+	trunc(@hitcount, 100);
+	printa(@hitcount);
+	*/
+
+	/*last = timestamp;*/
+}

@@ -1,0 +1,211 @@
+#!/home/mahrens/bin/dpp -qs
+
+#pragma D option aggrate=10hz
+#pragma D option switchrate=10hz
+#pragma D option quiet
+
+BEGIN
+{
+	self->start = 0;
+	self->stop = 0;
+	reason = "?";
+	reasoncaller = (uintptr_t)NULL;
+	@bytes_read2 = sum(0);
+	@reads = count();
+	lastprint = 0;
+}
+
+spa_sync:entry
+/stringof(args[0]->spa_name) == $$1/
+{
+	printf("%5ums ",
+	    (timestamp - self->stop)/1000000);
+
+	spa = args[0];
+
+	normalize(@bytes_read2,
+	    1024*1024 * (timestamp - self->stop)/1000000000);
+	normalize(@reads,
+	    (timestamp - self->stop)/1000000000);
+	printa("%3@uMB/s ", @bytes_read2);
+	printa("%4@uop/s read", @reads);
+	clear(@bytes_read2);
+	clear(@reads);
+
+	if (args[0]->spa_dsl_pool->dp_dirty_total >= `zfs_dirty_data_sync)
+		reason = "dirty";
+
+	printf("%10s (%24a) ",
+	    reason, reasoncaller);
+	self->start = timestamp;
+}
+
+vdev_queue_pending_remove:entry
+{
+	this->io = (zfs`zio_t*)args[1];
+	if (this->io->io_spa == spa) {
+		if (this->io->io_type == ZIO_TYPE_READ) {
+			@reads = count();
+			@bytes_read2 = sum(this->io->io_size);
+		}
+		if (this->io->io_type == ZIO_TYPE_WRITE &&
+		    this->io->io_bookmark.zb_level != 2) {
+			@bytes_written = sum(this->io->io_size);
+			@bytes_written2 = sum(this->io->io_size);
+		}
+	}
+}
+
+dmu_tx_delay:delay-mintime
+{
+	this->tx = (dmu_tx_t *)arg0;
+	if (this->tx->tx_pool->dp_spa == spa)
+		@throttle_us = max((arg2 + 999) / 1000);
+}
+
+dmu_tx_delay:return
+{
+	if (entry->args[0]->tx_pool->dp_spa == spa)
+		@delay_us = max(entry->elapsed_us + 1);
+}
+
+dsl_sync_task:entry
+/strtok(stringof((char*)arg0), "/@") == $$1 && reasoncaller == NULL/
+{
+	reason = "synctask";
+	reasoncaller = caller;
+}
+
+txg_wait_open:entry
+{
+	if (args[0]->dp_spa == spa) {
+		reason = "waitopen";
+		reasoncaller = caller;
+		trace(probefunc);
+		stack();
+	}
+}
+
+#if 0
+set-error
+/arg0 == 91/
+{
+	printf("returning ERESTART from:\n");
+	stack();
+}
+#endif
+
+arc_tempreserve_space:return
+/arg1 == 91/
+{
+	printf("reserve=%uKB arc_tempreserve=%uKB arc_c=%uKB\n",
+	    entry->arg0 / 1024,
+	    `arc_tempreserve / 1024,
+	    `arc_stats.arcstat_c.value.ui64 / 1024);
+
+}
+
+zfs-dprintf
+/stringof(arg1) == "arc_tempreserve_space"/
+{
+	printf("%s: %s\n", stringof(arg1), stringof(arg3));
+}
+
+/*
+zfsdev_ioctl:entry
+/this->vec = zfs`zfs_ioc_vec[args[1] - ('Z'<<8)], this->vec.zvec_allow_log && this->vec.zvec_name/
+{
+	iocname = stringof(this->vec.zvec_name);
+}
+*/
+
+cv_timedwait:return
+{
+	if (self->start && args[1] == -1 && callers["txg_thread_wait"])
+		reason = "timeout";
+}
+
+txg_thread_wait:return
+{
+	if (self->start && reason == "?" && entry->args[3] != 0) {
+		this->txs = entry->args[0];
+		if (this->txs->tx_synced_txg < this->txs->tx_sync_txg_waiting) {
+			reason = "sync_txg_waiting";
+		} else if (this->txs->tx_quiesced_txg != 0) {
+			reason = "quiesced";
+		}
+	}
+#if 0
+	if (self->start && entry->args[3] != 0) {
+		printf("requested %u ticks, waited %ums\n",
+		    entry->args[3], entry->elapsed_ms);
+	}
+#endif
+}
+
+tick-10hz
+/spa != 0/
+{
+	@dirty_mb = max(spa->spa_dsl_pool->dp_dirty_total / 1024 / 1024);
+}
+
+spa_sync:return
+/self->start/
+{
+	normalize(@bytes_written, 1024*1024);
+	normalize(@bytes_written2, 1024*1024 * (timestamp - self->start)/1000000000);
+	normalize(@bytes_read2, 1024*1024 * (timestamp - self->start)/1000000000);
+	normalize(@reads, (timestamp - self->stop)/1000000000);
+	printa(" %4@uMB", @bytes_written);
+	printf(" in %5ums", entry->elapsed_ms);
+	printa(" (%3@uMB/s)", @bytes_written2);
+	printa(" + %3@uMB/s", @bytes_read2);
+	printa(" %4@uop/s read", @reads);
+	printa(" maxthrottle=%@4dus max_delay=%@5dus", @throttle_us, @delay_us);
+	printa(" maxdirty=%@4uMB", @dirty_mb);
+	printf("/%uMB", `zfs_dirty_data_max / 1024 / 1024);
+	printf("\n");
+	clear(@bytes_read2);
+	clear(@reads);
+	clear(@bytes_written);
+	clear(@bytes_written2);
+	clear(@bytes_read2);
+	clear(@reads);
+	clear(@throttle_us);
+	clear(@delay_us);
+	clear(@dirty_mb);
+	reason = "?";
+	reasoncaller = NULL;
+
+	self->stop = timestamp;
+
+#if 0
+	if (stalled) {
+		stalled = 0;
+		printa("%@u ops stalled due to lack of open txg\n", @stalls);
+		normalize(@stalltime, 1000 * 1000);
+		printa(" (%@ums/stall)\n", @stalltime);
+		clear(@stalls);
+		clear(@stalltime);
+	}
+#endif
+}
+
+BEGIN
+{
+	printed = 100000;
+}
+
+BEGIN,
+spa_sync:return
+/self->start && printed++ > 30/
+{
+	printf("\n");
+	printf("time since last sync\n");
+	printf("     |      reads while not syncing\n");
+	printf("     |         |                reason for sync           (detail)\n");
+	printf("     |         |                   |                           |     MBytes written by sync\n");
+	printf("     v         v                   v                           v       v       time syncing        reads while syncing\n");
+	printed = 0;
+}
+

@@ -1,0 +1,10 @@
+#!/usr/sbin/dtrace -qs
+
+arc_buf_alloc:return
+{
+	this->buf = (arc_buf_hdr_t *)arg1;
+	if (this->buf->b_freeze_cksum != 0) {
+		printf("BUG: hdr=%p b_freeze_cksum=%p\n",
+		    this->buf, this->buf->b_freeze_cksum);
+	}
+}

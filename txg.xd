@@ -1,0 +1,192 @@
+#!/usr/sbin/dtrace -Cs
+
+#pragma D option quiet
+#pragma D option aggrate=5hz
+#pragma D option switchrate=5hz
+#pragma D option dynvarsize=5m
+#pragma D option experimental
+
+BEGIN
+{
+	self->start = 0;
+	self->stop = 0;
+	@bytes_read2 = sum(0);
+	@reads = count();
+	lastprint = 0;
+}
+
+spa_sync:entry
+/stringof(args[0]->spa_name) == $$1/
+{
+	printf("%5ums ",
+	    (timestamp - self->stop)/1000000);
+
+	spa = args[0];
+
+#if 0
+	normalize(@bytes_read2,
+	    1024*1024 * (timestamp - self->stop)/1000000000);
+	normalize(@reads,
+	    (timestamp - self->stop)/1000000000);
+	printa("%3@uMB/s ", @bytes_read2);
+	printa("%4@uop/s read", @reads);
+	clear(@bytes_read2);
+	clear(@reads);
+#endif
+
+	self->start = timestamp;
+}
+
+dsl_pool_sync:return
+/entry->args[0]->dp_spa == spa && spa->spa_sync_pass == 1/
+{
+	pass1_ms = entry->elapsed_ms;
+}
+
+vdev_queue_pending_remove:entry
+{
+	this->io = (zfs`zio_t*)args[1];
+	if (this->io->io_spa == spa) {
+#if 0
+		if (this->io->io_type == ZIO_TYPE_READ) {
+			@reads = count();
+			@bytes_read2 = sum(this->io->io_size);
+		}
+#endif
+		if (this->io->io_type == ZIO_TYPE_WRITE &&
+		    this->io->io_bookmark.zb_level != 2) {
+			@bytes_written = sum(this->io->io_size);
+			@bytes_written2 = sum(this->io->io_size);
+		}
+	}
+}
+
+dmu_tx_delay:delay-mintime
+{
+	this->tx = (dmu_tx_t *)arg0;
+	if (this->tx->tx_pool->dp_spa == spa)
+		@throttle_us = max((arg2 + 999) / 1000);
+}
+
+dmu_tx_delay:return
+{
+	if (entry->args[0]->tx_pool->dp_spa == spa) {
+		@delay_us = max(entry->elapsed_us + 1);
+		@delay_us_avg = avg(entry->elapsed_us + 1);
+	}
+}
+
+#if 0
+set-error
+/arg0 == 91/
+{
+	printf("returning ERESTART from:\n");
+	stack();
+}
+#endif
+
+arc_tempreserve_space:return
+/arg1 == 91/
+{
+	printf("reserve=%uKB arc_tempreserve=%uKB arc_c=%uKB\n",
+	    entry->arg0 / 1024,
+	    `arc_tempreserve / 1024,
+	    `arc_stats.arcstat_c.value.ui64 / 1024);
+
+}
+
+zfs-dprintf
+/stringof(arg1) == "arc_tempreserve_space"/
+{
+	printf("%s: %s\n", stringof(arg1), stringof(arg3));
+}
+
+/*
+zfsdev_ioctl:entry
+/this->vec = zfs`zfs_ioc_vec[args[1] - ('Z'<<8)], this->vec.zvec_allow_log && this->vec.zvec_name/
+{
+	iocname = stringof(this->vec.zvec_name);
+}
+*/
+
+tick-10hz
+/spa != 0/
+{
+	@dirty_mb = max(spa->spa_dsl_pool->dp_dirty_total / 1024 / 1024);
+	@dirty_b = max(spa->spa_dsl_pool->dp_dirty_total);
+}
+
+spa_sync:return
+/self->start/
+{
+	normalize(@bytes_written, 1024*1024);
+	normalize(@bytes_written2, 1024*1024 * (timestamp - self->start)/1000000000);
+	printa(" %4@uMB", @bytes_written);
+	printf(" in %5ums", entry->elapsed_ms);
+	printf(" (%2u%% p1)", pass1_ms * 100 / (entry->elapsed_ms + 1));
+	printa(" %3@uMB/s", @bytes_written2);
+#if 0
+	normalize(@bytes_read2, 1024*1024 * (timestamp - self->start)/1000000000);
+	normalize(@reads, (timestamp - self->stop)/1000000000);
+	printa(" + %3@uMB/s", @bytes_read2);
+	printa(" %4@uop/s read", @reads);
+#endif
+	printa(" %@4uMB", @dirty_mb);
+	normalize(@dirty_b, `zfs_dirty_data_max / 100);
+	printa(" (%@2u%%)", @dirty_b);
+	normalize(@delay_us, 1000);
+	normalize(@delay_us_avg, 1000);
+	printa(" %@4dus %@5dms %@5dms",
+	    @throttle_us, @delay_us, @delay_us_avg);
+
+	printf("\n");
+	clear(@bytes_read2);
+	clear(@reads);
+	clear(@bytes_written);
+	clear(@bytes_written2);
+	clear(@bytes_read2);
+	clear(@reads);
+	trunc(@throttle_us);
+	trunc(@delay_us);
+	trunc(@delay_us_avg);
+	clear(@dirty_mb);
+	clear(@dirty_b);
+
+	self->stop = timestamp;
+
+#if 0
+	if (stalled) {
+		stalled = 0;
+		printa("%@u ops stalled due to lack of open txg\n", @stalls);
+		normalize(@stalltime, 1000 * 1000);
+		printa(" (%@ums/stall)\n", @stalltime);
+		clear(@stalls);
+		clear(@stalltime);
+	}
+#endif
+}
+
+BEGIN
+{
+	printed = 100000;
+}
+
+spa_sync:return
+/self->start && printed++ > 30/
+{
+	printf("\n");
+	printf("%Y txg %u is next\n", walltimestamp, entry->args[1] + 1);
+	printf("time since last sync\n");
+	printf("     |  written by sync\n");
+	printf("     |      | syncing time (%% pass 1)\n");
+	printf("     |      |         |        |     write rate while syncing\n");
+	printf("     |      |         |        |       |   highest dirty (%% of limit) \n");
+	printf("     |      |         |        |       |        | highest throttle delay\n");
+	printf("     |      |         |        |       |        |            |      |  avg delay\n");
+	printf("     v      v         v        v       v        v            v      v       v\n");
+#if 0
+	printf("    0ms   145MB in  1342ms (60% p1) 108MB/s  208MB (10%)    0us    57us
+#endif
+	printed = 0;
+}
+

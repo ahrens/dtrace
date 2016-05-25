@@ -1,0 +1,108 @@
+
+BEGIN
+{
+	obj = 8;
+}
+
+dmu_free_long_range_impl:entry
+/args[1]->dn_object == obj/
+{
+	dn = args[1];
+	stack();
+	printf("off=%u len=%u maxblkid=%u", args[2], args[3], dn->dn_maxblkid);
+}
+
+dmu_free_long_range:return
+/entry->args[1] == obj/
+{
+	printf("maxblkid=%u", dn->dn_maxblkid);
+}
+
+dnode_sync_free_range:return
+{
+	this->dsfra = (dnode_sync_free_range_arg_t *)entry->args[0];
+
+	if (this->dsfra->dsfra_dnode->dn_object == obj) {
+		printf("txg=%u blkid=%u nblks=%u maxblkid=%u phys_maxblkid=%u",
+		    this->dsfra->dsfra_tx->tx_txg,
+		    entry->args[1], entry->args[2],
+		    this->dsfra->dsfra_dnode->dn_maxblkid,
+		    this->dsfra->dsfra_dnode->dn_phys->dn_maxblkid);
+	}
+}
+
+dnode_sync_free_range_impl:entry
+/args[0]->dn_object == obj/
+{
+	printf("dva=%x,%x blkid=%u nblks=%u",
+	    args[0]->dn_phys->dn_blkptr[0].blk_dva[0].dva_word[0],
+	    args[0]->dn_phys->dn_blkptr[0].blk_dva[0].dva_word[1],
+	    args[1], args[2]);
+}
+
+free_children:entry
+/args[0]->db.db_object == obj/
+{
+	printf("lvl=%u blkid=%u blkid=%u nblks=%u",
+	    args[0]->db_level,
+	    args[0]->db_blkid,
+	    args[1], args[2]);
+}
+
+dbuf_sync_indirect:entry
+/args[0]->dr_dbuf->db.db_object == obj/
+{
+	this->data = (blkptr_t *)args[0]->dr_dbuf->db_buf->b_data;
+	printf("lvl=%u blkid=%u bp[0]: dva[0]=%x,%x birth=%u",
+	    args[0]->dr_dbuf->db_level,
+	    args[0]->dr_dbuf->db_blkid,
+	    this->data->blk_dva[0].dva_word[0],
+	    this->data->blk_dva[0].dva_word[1],
+	    this->data->blk_birth);
+}
+
+dbuf_read_impl:entry
+/args[0]->db.db_object == obj/
+{
+	printf("lvl=%u blkid=%u",
+	    args[0]->db_level,
+	    args[0]->db_blkid);
+	if (args[0]->db_blkptr != NULL) {
+		printf("dva[0]=%x,%x birth=%u",
+		    args[0]->db_blkptr->blk_dva[0].dva_word[0],
+		    args[0]->db_blkptr->blk_dva[0].dva_word[1],
+		    args[0]->db_blkptr->blk_birth);
+	}
+}
+
+dbuf_read_impl:return
+/entry->args[0]->db.db_object == obj/
+{
+	this->data = (blkptr_t *)entry->args[0]->db_buf->b_data;
+	printf("bp[0]: dva[0]=%x,%x birth=%u",
+	    this->data->blk_dva[0].dva_word[0],
+	    this->data->blk_dva[0].dva_word[1],
+	    this->data->blk_birth);
+}
+
+dbuf_hold_impl:entry
+/args[0]->dn_object == obj/
+{
+	printf("lvl=%u blkid=%u fail_sparse=%u",
+	    args[1], args[2], args[3]);
+	stack();
+}
+
+dbuf_create:entry
+/args[0]->dn_object == obj/
+{
+	printf("lvl=%u blkid=%u blkptr=%p",
+	    args[1], args[2], args[4]);
+	if (args[4] != NULL) {
+		printf("bp: dva[0]=%x,%x birth=%u",
+		    args[4]->blk_dva[0].dva_word[0],
+		    args[4]->blk_dva[0].dva_word[1],
+		    args[4]->blk_birth);
+	}
+	stack();
+}

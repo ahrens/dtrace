@@ -1,0 +1,23 @@
+#!/usr/sbin/dtrace -s
+
+arc_read_done:entry
+{
+	this->buf = (arc_buf_t *)args[0]->io_private;
+	if (this->buf->b_hdr->b_flags & zfs`ARC_FLAG_PREDICTIVE_PREFETCH) {
+		@predictive_issued = count();
+		predictive_issued++;
+	}
+}
+
+arc-demand-hit-predictive-prefetch
+{
+	@predictive_hit = count();
+	predictive_hit++;
+}
+
+tick-10s
+{
+	printa("%@u/%@u predictive prefetches were used\n",
+	    @predictive_hit, @predictive_issued);
+	
+}

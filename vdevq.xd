@@ -1,0 +1,180 @@
+#!/usr/sbin/dtrace -s
+
+#pragma D option switchrate=10hz
+#pragma D option aggrate=10hz
+#pragma D option aggsortkey
+#pragma D option quiet
+
+typedef enum zio_priority {
+	ZIO_PRIORITY_SYNC_READ,
+	ZIO_PRIORITY_SYNC_WRITE,	/* ZIL */
+	ZIO_PRIORITY_ASYNC_READ,	/* prefetch */
+	ZIO_PRIORITY_ASYNC_WRITE,	/* spa_sync() */
+	ZIO_PRIORITY_SCRUB,		/* asynchronous scrub/resilver reads */
+	ZIO_PRIORITY_REMOVAL,		/* read/writes for device removal*/
+	ZIO_PRIORITY_MAX_QUEUEABLE
+} zio_priority_t;
+
+dsl_pool_sync:return
+/stringof(entry->args[0]->dp_spa->spa_name) == $$1/
+{
+	printf("  %s(txg=%u pass=%u) took %ums\n",
+	    probefunc,
+	    entry->args[0]->dp_spa->spa_syncing_txg,
+	    entry->args[0]->dp_spa->spa_sync_pass,
+	    entry->elapsed_ms);
+}
+
+vdev_queue_pending_add:entry
+/stringof(args[0]->vq_vdev->vdev_spa->spa_name) == $$1/
+{
+	activate[args[1]] = timestamp;
+}
+
+vdev_queue_pending_remove:entry
+/stringof(args[0]->vq_vdev->vdev_spa->spa_name) == $$1/
+{
+	this->name = stringof(strrchr(args[0]->vq_vdev->vdev_path, '/') + 1);
+	@queued_sr[this->name] =
+	    max(args[0]->vq_class[ZIO_PRIORITY_SYNC_READ].vqc_queued_tree.avl_numnodes);
+	@active_sr[this->name] =
+	    max(args[0]->vq_class[ZIO_PRIORITY_SYNC_READ].vqc_active);
+	@queued_sw[this->name] =
+	    max(args[0]->vq_class[ZIO_PRIORITY_SYNC_WRITE].vqc_queued_tree.avl_numnodes);
+	@active_sw[this->name] =
+	    max(args[0]->vq_class[ZIO_PRIORITY_SYNC_WRITE].vqc_active);
+	@queued_ar[this->name] =
+	    max(args[0]->vq_class[ZIO_PRIORITY_ASYNC_READ].vqc_queued_tree.avl_numnodes);
+	@active_ar[this->name] =
+	    max(args[0]->vq_class[ZIO_PRIORITY_ASYNC_READ].vqc_active);
+	@queued_aw[this->name] =
+	    max(args[0]->vq_class[ZIO_PRIORITY_ASYNC_WRITE].vqc_queued_tree.avl_numnodes);
+	@active_aw[this->name] =
+	    max(args[0]->vq_class[ZIO_PRIORITY_ASYNC_WRITE].vqc_active);
+	@queued_s[this->name] =
+	    max(args[0]->vq_class[ZIO_PRIORITY_SCRUB].vqc_queued_tree.avl_numnodes);
+	@active_s[this->name] =
+	    max(args[0]->vq_class[ZIO_PRIORITY_SCRUB].vqc_active);
+	@queued_m[this->name] =
+	    max(args[0]->vq_class[ZIO_PRIORITY_REMOVAL].vqc_queued_tree.avl_numnodes);
+	@active_m[this->name] =
+	    max(args[0]->vq_class[ZIO_PRIORITY_REMOVAL].vqc_active);
+
+	if (activate[args[1]]) {
+		this->prio = args[1]->io_priority;
+		if (this->prio == ZIO_PRIORITY_SYNC_READ) {
+			@latency_sr[this->name] = avg(timestamp - activate[args[1]]);
+			@total_latency_sr = avg(timestamp - activate[args[1]]);
+			@total_quantized_latency_ms_sr = quantize((timestamp - activate[args[1]] + 500000)/1000/1000);
+		}
+		if (this->prio == ZIO_PRIORITY_SYNC_WRITE) {
+			@latency_sw[this->name] = avg(timestamp - activate[args[1]]);
+			@total_latency_sw = avg(timestamp - activate[args[1]]);
+		}
+		if (this->prio == ZIO_PRIORITY_ASYNC_READ) {
+			@latency_ar[this->name] = avg(timestamp - activate[args[1]]);
+			@total_latency_ar = avg(timestamp - activate[args[1]]);
+		}
+		if (this->prio == ZIO_PRIORITY_ASYNC_WRITE) {
+			@latency_aw[this->name] = avg(timestamp - activate[args[1]]);
+			@total_latency_aw = avg(timestamp - activate[args[1]]);
+		}
+		if (this->prio == ZIO_PRIORITY_SCRUB) {
+			@latency_s[this->name] = avg(timestamp - activate[args[1]]);
+			@total_latency_s = avg(timestamp - activate[args[1]]);
+		}
+		if (this->prio == ZIO_PRIORITY_REMOVAL) {
+			@latency_m[this->name] = avg(timestamp - activate[args[1]]);
+			@total_latency_m = avg(timestamp - activate[args[1]]);
+		}
+		activate[args[1]] = 0;
+	}
+}
+
+zfs_read:entry
+{
+	self->counted = 1;
+	@read_threads = sum(1);
+}
+
+zfs_read:return
+/self->counted/
+{
+	@read_threads = sum(-1);
+	self->counted = 0;
+}
+
+zfs_write:entry
+{
+	self->counted = 1;
+	@write_threads = sum(1);
+}
+
+zfs_write:return
+/self->counted/
+{
+	@write_threads = sum(-1);
+	self->counted = 0;
+}
+
+tick-5hz
+{
+	printf("\nsync_read latency in milliseconds:");
+	printa(@total_quantized_latency_ms_sr);
+
+	normalize(@latency_sr, 1000 * 1000);
+	normalize(@latency_sw, 1000 * 1000);
+	normalize(@latency_ar, 1000 * 1000);
+	normalize(@latency_aw, 1000 * 1000);
+	normalize(@latency_s, 1000 * 1000);
+	normalize(@latency_m, 1000 * 1000);
+
+	printf("\n");
+	printf("                       sync_read      sync_write    async_read     async_write   scrub/resilver  removal\n");
+	printf("   disk              queued+active  queued+active  queued+active  queued+active  queued+active  queued+active\n");
+	printa("%-25s %@1d+%@d %@3dms   %@4d+%@d %@3dms   %@4d+%@d %@3dms   %@4d+%@d %@3dms   %@4d+%@d %@3dms   %@4d+%@d %@3dms\n",
+	    @queued_sr, @active_sr, @latency_sr,
+	    @queued_sw, @active_sw, @latency_sw,
+	    @queued_ar, @active_ar, @latency_ar,
+	    @queued_aw, @active_aw, @latency_aw,
+	    @queued_s, @active_s, @latency_s,
+	    @queued_m, @active_m, @latency_m);
+	clear(@active_sr);
+	clear(@queued_sr);
+	clear(@active_sw);
+	clear(@queued_sw);
+	clear(@active_ar);
+	clear(@queued_ar);
+	clear(@active_aw);
+	clear(@queued_aw);
+	clear(@active_s);
+	clear(@queued_s);
+	clear(@active_m);
+	clear(@queued_m);
+
+	normalize(@total_latency_sr, 1000 * 1000);
+	normalize(@total_latency_sw, 1000 * 1000);
+	normalize(@total_latency_ar, 1000 * 1000);
+	normalize(@total_latency_aw, 1000 * 1000);
+	normalize(@total_latency_s, 1000 * 1000);
+	normalize(@total_latency_m, 1000 * 1000);
+	printa("average latency:              %@3ums          %@3ums          %@3ums          %@3ums          %@3ums          %@3ums\n",
+	    @total_latency_sr, @total_latency_sw, @total_latency_ar, @total_latency_aw, @total_latency_s, @total_latency_m);
+	printa("threads in zfs_read:%@u  zfs_write:%@u\n",
+	    @read_threads, @write_threads);
+}
+
+tick-10s
+{
+	clear(@latency_sr);
+	clear(@latency_sw);
+	clear(@latency_ar);
+	clear(@latency_aw);
+	clear(@latency_s);
+	clear(@total_latency_sr);
+	clear(@total_latency_sw);
+	clear(@total_latency_ar);
+	clear(@total_latency_aw);
+	clear(@total_latency_s);
+	clear(@total_quantized_latency_ms_sr);
+}

@@ -1,0 +1,24 @@
+#!/usr/sbin/dtrace -Cqs
+
+#pragma D option experimental
+
+#define N2TXH(n) ((dmu_tx_hold_t*)(((char *)n) - 8))
+
+dsl_dir_tempreserve_space:return
+/arg1 == ERESTART/
+{
+	printf("dsl_dir_tempresere_space(dir=%s mem=%uK a=%uK f=%uK u=%uK) -> %u\n",
+	    entry->args[0]->dd_myname,
+	    entry->args[1] / 1024,
+	    entry->args[2] / 1024,
+	    entry->args[3] / 1024,
+	    entry->args[4] / 1024,
+	    arg1);
+
+	this->node = entry->args[6]->tx_holds.list_head.list_next;
+	while10(this->node != &entry->args[6]->tx_holds.list_head) {
+		print(*N2TXH(this->node));
+		printf("\n");
+		this->node = this->node->list_next;
+	}
+}

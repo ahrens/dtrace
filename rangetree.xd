@@ -1,0 +1,27 @@
+
+::range_tree_clear:entry
+{
+	printf("clear: rt=%p start=%u size=%u\n",
+	    arg0, arg1, arg2);
+	self->trace=1;
+}
+
+::range_tree_find_impl:return
+/self->trace && arg1 != 0/
+{
+	this->rs = args[1];
+	printf("  found: rt=%p  start=%u end=%u\n",
+	    entry->arg0, this->rs->rs_start, this->rs->rs_end);
+}
+
+::range_tree_remove:entry
+/self->trace/
+{
+	printf("  remove: rt=%p start=%p end=%u\n",
+	    arg0, arg1, arg2);
+}
+
+::range_tree_clear:return
+{
+	self->trace=0;
+}

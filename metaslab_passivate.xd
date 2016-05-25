@@ -1,0 +1,18 @@
+metaslab_passivate:return
+{
+	printf("spa=%s ms=%u weight=%u %u",
+	entry->args[0]->ms_group->mg_vd->vdev_spa->spa_name, entry->args[0]->ms_id, entry->args[1], entry->args[0]->ms_weight);
+}
+
+/*
+metaslab_activate:entry
+{
+	printf("ms=%u weight=%u new=%u", args[0]->ms_id, args[0]->ms_weight, args[1]);
+}
+*/
+
+metaslab_block_alloc:return
+/arg1==-1ULL/
+{
+	printf("ms=%u weight=%u", entry->args[0]->ms_id, entry->args[0]->ms_weight);
+}

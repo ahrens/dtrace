@@ -1,0 +1,25 @@
+#!/usr/sbin/dtrace -qs
+
+metaslab_alloc_dva:entry
+{
+	if (args[7] & 14) {
+		@["can not fast gang"] = count();
+	} else if (args[2] <= 512) {
+		@["single sector"] = count();
+	}
+}
+
+metaslab_group_allocatable:entry
+{
+	
+}
+
+
+spa_sync:return
+/entry->args[0]->spa_name == $$1/
+{
+	printf("\ntxg %u took %ums to sync\n",
+	    entry->args[1], entry->elapsed_ms);
+	printa(@);
+	clear(@);
+}

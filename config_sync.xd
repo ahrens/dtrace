@@ -1,0 +1,15 @@
+#!/usr/bin/dtrace -s
+
+#pragma D option flowindent
+
+zfs::entry
+/callers["vdev_config_sync"]/
+{
+	printf("%x %x %x", arg0, arg1, arg2);
+}
+
+zfs::return
+/callers["vdev_config_sync"]/
+{
+	printf("%u", arg1);
+}

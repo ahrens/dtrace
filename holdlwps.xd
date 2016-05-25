@@ -1,0 +1,32 @@
+#!/usr/sbin/dtrace -wqs
+
+#pragma dtrace option switchrate=10hz
+
+holdlwps:entry
+/execname == "java"/
+{
+	holdpid = pid;
+	holdtime = timestamp;
+}
+
+holdlwps:return
+{
+	if (entry->elapsed_ms > 100) {
+		printf("%Y pid %u (%s) took %ums to hold\n",
+		    walltimestamp, pid, execname, entry->elapsed_ms);
+	}
+	@["microseconds for holdlwps()"] = quantize(entry->elapsed_us);
+	holdpid = 0;
+	holdtime = 0;
+}
+
+tick-3
+/holdpid != 0 && timestamp - holdtime > 500000000/
+{
+	printf("pid %u trying to hold for %ums and counting; gathering stacks.\n",
+	    holdpid, (timestamp - holdtime) / 1000000);
+	/*
+	system("echo \"0t%u::pid2proc | ::walk thread | ::stacks\" | mdb -k", holdpid);
+	*/
+	system("/var/tmp/run.sh");
+}

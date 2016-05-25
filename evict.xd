@@ -1,0 +1,32 @@
+#!/usr/sbin/dtrace -qs
+
+dnode_evict_dbufs:entry
+{
+	stack();
+	printf("%s(os=%p obj=%u)\n",
+	    probefunc, args[0]->dn_objset, args[0]->dn_object);
+
+}
+
+avl_first:return,
+avl_walk:return
+/callers["dnode_evict_dbufs"]/
+{
+	if (arg1 == NULL) {
+		printf("  %s() -> NULL\n",
+		    probefunc);
+	} else {
+		this->rv = (dmu_buf_impl_t *)arg1;
+		printf("  %s() -> lvl=%u blkid=%u\n",
+		    probefunc,
+		    this->rv->db_level, this->rv->db_blkid);
+	}
+}
+
+arc_buf_eviction_needed:return
+/callers["dnode_evict_dbufs"]/
+{
+	printf("    %s() -> %s\n",
+	    probefunc, arg1 ? "true" : "false");
+}
+

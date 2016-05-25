@@ -1,0 +1,52 @@
+#!/usr/sbin/dtrace -s
+
+#pragma D option quiet
+#pragma D option aggsortpos=2
+#pragma D option aggrate=10hz
+#pragma D option switchrate=10hz
+#pragma D option dynvarsize=10m
+
+fbt::spa_sync:entry
+/stringof(args[0]->spa_name) == $$1/
+{
+        self->yes = 1;
+}
+
+metaslab_condense:return,
+space_map_*:return,
+zio_dva_free:return
+/self->yes/
+{
+        this->delta = timestamp - entry->timestamp;
+
+        @c[probefunc] = sum(1);
+        @t[probefunc] = sum(this->delta);
+        @p[probefunc] = sum(this->delta);
+}
+
+space_map_write:entry
+/self->yes/
+{
+	@c["nodes written"] = sum(args[1]->rt_root.avl_numnodes);
+}
+
+fbt::spa_sync:return
+/self->yes/
+{
+        this->delta = timestamp - entry->timestamp;
+
+        @c[probefunc] = sum(1);
+        @t[probefunc] = sum(this->delta);
+        @p[probefunc] = sum(this->delta);
+
+        normalize(@t, 1000000);
+        normalize(@p, this->delta / 100);
+
+	printf("txg %u:\n", entry->args[1]);
+        printa("%-30s  %@5d times  %@10dms (%@2d%%)\n", @c, @t, @p);
+        printf("\n");
+        clear(@c);
+        clear(@t);
+        clear(@p);
+}
+

@@ -1,0 +1,18 @@
+
+#pragma D option aggsortkey
+
+ddi_get_lbolt:return
+{
+	curtime = arg1;
+}
+
+arc_buf_destroy:entry
+/callers["arc_evict"] && curtime/
+{
+	@[args[0]->b_hdr->b_state==&`ARC_mru ? "mru" : "mfu",
+	    args[0]->b_hdr->b_type ? "metadata" : "data"] =
+	    quantize((curtime - args[0]->b_hdr->b_arc_access)/100);
+	@age[args[0]->b_hdr->b_state==&`ARC_mru ? "mru" : "mfu",
+	    args[0]->b_hdr->b_type ? "metadata" : "data"] =
+	    avg((curtime - args[0]->b_hdr->b_arc_access)/100);
+}
